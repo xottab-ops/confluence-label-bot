@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from http.cookiejar import DefaultCookiePolicy
 from typing import Any
@@ -116,13 +116,39 @@ class ConfluenceClient:
             ancestor_ids=tuple(str(a["id"]) for a in ancestors),
         )
 
+    def _iter_paged(self, path: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """Пройти все страницы постраничной выдачи.
+
+        Признак конца — отсутствие ссылки `_links.next`, а не то, что результатов
+        пришло меньше запрошенного: порция бывает неполной и в середине выдачи —
+        сервер вправе урезать limit до своего максимума.
+        """
+        start = 0
+        limit = 50
+        while True:
+            data = self._request("GET", path, params={**params, "limit": limit, "start": start})
+            results = data.get("results", [])
+            yield from results
+
+            if not (data.get("_links") or {}).get("next"):
+                return
+
+            # Шагаем на фактический limit из ответа: запрошенный сервер мог урезать.
+            step = int(data.get("limit") or 0) or len(results)
+            if step <= 0:
+                logger.warning(
+                    "Пагинация %s: сервер обещает следующую страницу, но порция пуста "
+                    "(start=%d). Прерываю, иначе цикл не кончится.",
+                    path,
+                    start,
+                )
+                return
+            start += step
+
     @staticmethod
-    def _cql_in(field: str, values: Sequence[str]) -> str:
-        """Условие вида `field in ("a","b")` (для одного значения — `field="a"`)."""
-        quoted = ['"{}"'.format(v.replace('"', '\\"')) for v in values]
-        if len(quoted) == 1:
-            return f"{field}={quoted[0]}"
-        return f"{field} in ({','.join(quoted)})"
+    def _labels_of(data: dict[str, Any]) -> set[str]:
+        results = ((data.get("metadata") or {}).get("labels") or {}).get("results") or []
+        return {str(label.get("name", "")) for label in results}
 
     # ── публичное ───────────────────────────────────────────────────────────
     def find_pages_with_labels_under(
@@ -134,51 +160,34 @@ class ConfluenceClient:
     ) -> list[Page]:
         """Страницы в поддереве ancestor_id с любым из labels (любая глубина).
 
-        Оператор CQL `ancestor` находит потомков на любом уровне; несколько
-        лейблов объединяются по ИЛИ через `in (...)`.
+        Обходит поддерево через /content/{id}/descendant/page и сверяет лейблы
+        сам, вместо поиска по CQL. Так выборка читается из базы, а не из
+        Lucene-индекса: индекс обновляется асинхронно, а в кластере живёт на
+        каждой ноде свой, поэтому CQL умеет молча возвращать неполный результат.
         """
-        # ID страницы в CQL — без кавычек, там ожидается число.
-        parts = ["type=page", self._cql_in("label", labels), f"ancestor={ancestor_id}"]
-        if space_key:
-            parts.insert(0, self._cql_in("space", [space_key]))
-        cql = " and ".join(parts)
-        logger.debug("CQL: %s", cql)
-
+        wanted = {label.lower() for label in labels}
         pages: list[Page] = []
-        start = 0
-        limit = 50
-        while True:
-            data = self._request(
-                "GET",
-                "/content/search",
-                params={
-                    "cql": cql,
-                    "limit": limit,
-                    "start": start,
-                    "expand": "version,space,ancestors",
-                },
-            )
-            results = data.get("results", [])
-            pages.extend(self._to_page(item) for item in results)
+        total = 0
 
-            # Признак конца — отсутствие ссылки на следующую страницу, а не то,
-            # что результатов пришло меньше запрошенного. Порция бывает неполной
-            # и в середине выдачи: сервер вправе урезать limit до своего максимума,
-            # а Confluence вдобавок отсеивает недоступные страницы уже после того,
-            # как достал порцию из индекса.
-            if not (data.get("_links") or {}).get("next"):
-                break
+        for item in self._iter_paged(
+            f"/content/{ancestor_id}/descendant/page",
+            {"expand": "version,space,ancestors,metadata.labels"},
+        ):
+            total += 1
+            if not {name.lower() for name in self._labels_of(item)} & wanted:
+                continue
+            page = self._to_page(item)
+            if space_key and page.space_key != space_key:
+                continue
+            pages.append(page)
 
-            # Шагаем на фактический limit из ответа: запрошенный сервер мог урезать.
-            step = int(data.get("limit") or 0) or len(results)
-            if step <= 0:
-                logger.warning(
-                    "Пагинация: сервер обещает следующую страницу, но порция пуста "
-                    "(start=%d). Прерываю, иначе цикл не кончится.",
-                    start,
-                )
-                break
-            start += step
+        logger.debug(
+            "Поддерево %s: страниц всего %d, с лейблами (%s) — %d",
+            ancestor_id,
+            total,
+            ", ".join(labels),
+            len(pages),
+        )
         return pages
 
     def get_current_user(self) -> str:
