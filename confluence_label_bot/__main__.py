@@ -25,6 +25,32 @@ def _setup_logging(level: str) -> None:
     )
 
 
+def _check(client: ConfluenceClient, config: Config, logger: logging.Logger) -> int:
+    """Проверить доступность всех страниц, упомянутых в правилах."""
+    ok = True
+    for rule in config.rules:
+        logger.info("Правило %r (лейблы: %s):", rule.name, ", ".join(rule.labels))
+        for page_id, role in [
+            *((s, "источник") for s in rule.sources),
+            (rule.target, "назначение"),
+        ]:
+            try:
+                page = client.get_page(page_id)
+            except ConfluenceError as exc:
+                logger.error("  %-10s %s → недоступна: %s", role, page_id, exc)
+                ok = False
+                continue
+            logger.info(
+                "  %-10s %s %r (space=%s)", role, page.id, page.title, page.space_key
+            )
+
+    if not ok:
+        logger.error("Проверка не пройдена.")
+        return 1
+    logger.info("Проверка успешна: правил %d.", len(config.rules))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="confluence_label_bot")
     parser.add_argument(
@@ -35,10 +61,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Проверить конфигурацию, авторизацию и доступ к страницам, затем выйти",
     )
+    parser.add_argument(
+        "--rules",
+        metavar="FILE",
+        help="Путь к файлу правил (по умолчанию: RULES_FILE из .env либо rules.yaml)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        config = Config.load()
+        config = Config.load(rules_file=args.rules)
     except ConfigError as exc:
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         return 2
@@ -49,16 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     client = ConfluenceClient(config)
 
     if args.check:
-        try:
-            src = client.get_page(config.source_page_id)
-            dst = client.get_page(config.target_page_id)
-        except ConfluenceError as exc:
-            logger.error("Проверка не пройдена: %s", exc)
-            return 1
-        logger.info("Источник:   %s %r (space=%s)", src.id, src.title, src.space_key)
-        logger.info("Назначение: %s %r (space=%s)", dst.id, dst.title, dst.space_key)
-        logger.info("Проверка успешна.")
-        return 0
+        return _check(client, config, logger)
 
     bot = LabelMoverBot(config, client)
 

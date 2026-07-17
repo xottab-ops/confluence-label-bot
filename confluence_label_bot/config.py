@@ -7,6 +7,10 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+from .rules import Rule, RulesError, load_rules
+
+DEFAULT_RULES_FILE = "rules.yaml"
+
 
 class ConfigError(RuntimeError):
     """Ошибка конфигурации: не заданы или некорректны переменные окружения."""
@@ -45,17 +49,14 @@ class Config:
     verify_ssl: bool
     ca_cert_dir: str | None
 
-    space_key: str
-    source_page_id: str
-    target_page_id: str
-    move_label: str
+    rules: tuple[Rule, ...]
 
     poll_interval_seconds: int
     log_level: str
     dry_run: bool
 
     @classmethod
-    def load(cls) -> "Config":
+    def load(cls, rules_file: str | None = None) -> "Config":
         # load_dotenv не перезаписывает уже выставленные переменные окружения,
         # что удобно при запуске в контейнере/CI, где значения приходят извне.
         load_dotenv()
@@ -72,10 +73,12 @@ class Config:
                 "пару CONFLUENCE_USERNAME + CONFLUENCE_PASSWORD"
             )
 
-        source_page_id = _require("SOURCE_PAGE_ID")
-        target_page_id = _require("TARGET_PAGE_ID")
-        if source_page_id == target_page_id:
-            raise ConfigError("SOURCE_PAGE_ID и TARGET_PAGE_ID не должны совпадать")
+        # Приоритет: аргумент CLI → переменная окружения → значение по умолчанию.
+        path = rules_file or (os.getenv("RULES_FILE") or "").strip() or DEFAULT_RULES_FILE
+        try:
+            rules = load_rules(path)
+        except RulesError as exc:
+            raise ConfigError(str(exc)) from exc
 
         return cls(
             base_url=base_url,
@@ -84,10 +87,7 @@ class Config:
             password=password,
             verify_ssl=_get_bool("CONFLUENCE_VERIFY_SSL", True),
             ca_cert_dir=(os.getenv("CONFLUENCE_CA_CERT_DIR") or "").strip() or None,
-            space_key=_require("CONFLUENCE_SPACE_KEY"),
-            source_page_id=source_page_id,
-            target_page_id=target_page_id,
-            move_label=_require("MOVE_LABEL"),
+            rules=tuple(rules),
             poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 60),
             log_level=(os.getenv("LOG_LEVEL") or "INFO").strip().upper(),
             dry_run=_get_bool("DRY_RUN", False),

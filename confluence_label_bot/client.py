@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -92,18 +93,42 @@ class ConfluenceClient:
             parent_id=parent_id,
         )
 
-    # ── публичное ───────────────────────────────────────────────────────────
-    def find_pages_with_label_under(
-        self, *, space_key: str, ancestor_id: str, label: str
-    ) -> list[Page]:
-        """Все страницы поддерева ancestor_id с указанным лейблом (любая глубина).
+    @staticmethod
+    def _cql_in(field: str, values: Sequence[str], *, quote: bool = True) -> str:
+        """Условие вида `field in ("a","b")` (для одного значения — `field="a"`).
 
-        Использует CQL: оператор `ancestor` находит потомков на любом уровне.
+        ID страниц (`ancestor`) передаются без кавычек — CQL ждёт там число.
         """
-        cql = (
-            f'space="{space_key}" and type=page '
-            f'and label="{label}" and ancestor={ancestor_id}'
-        )
+        rendered = [
+            '"{}"'.format(v.replace('"', '\\"')) if quote else v for v in values
+        ]
+        if len(rendered) == 1:
+            return f"{field}={rendered[0]}"
+        return f"{field} in ({','.join(rendered)})"
+
+    # ── публичное ───────────────────────────────────────────────────────────
+    def find_pages_with_labels_under(
+        self,
+        *,
+        ancestor_ids: Sequence[str],
+        labels: Sequence[str],
+        space_key: str | None = None,
+    ) -> list[Page]:
+        """Страницы в поддеревьях ancestor_ids с любым из labels (любая глубина).
+
+        Оператор CQL `ancestor` находит потомков на любом уровне; несколько
+        источников и лейблов объединяются по ИЛИ через `in (...)`.
+        """
+        parts = [
+            "type=page",
+            self._cql_in("label", labels),
+            self._cql_in("ancestor", ancestor_ids, quote=False),
+        ]
+        if space_key:
+            parts.insert(0, self._cql_in("space", [space_key]))
+        cql = " and ".join(parts)
+        logger.debug("CQL: %s", cql)
+
         pages: list[Page] = []
         start = 0
         limit = 50

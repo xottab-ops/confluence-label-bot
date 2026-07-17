@@ -1,4 +1,5 @@
 .env
+rules.yaml
 .venv/
 __pycache__/
 *.pyc
