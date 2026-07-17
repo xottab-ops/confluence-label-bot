@@ -32,22 +32,19 @@ class LabelMoverBot:
         return total
 
     def _apply_rule(self, rule: Rule) -> int:
-        pages = self._client.find_pages_with_labels_under(
+        found = self._client.find_pages_with_labels_under(
             ancestor_ids=rule.sources,
             labels=rule.labels,
             space_key=rule.space_key,
         )
-
-        # Целевая страница может лежать в поддереве источника — под саму себя
-        # её переносить нельзя.
-        pages = [p for p in pages if p.id != rule.target]
+        pages = [p for p in found if self._needs_move(rule, p)]
 
         if not pages:
             logger.debug(
-                "Правило %r: страниц с лейблами %s в поддеревьях %s не найдено",
+                "Правило %r: страниц к переносу нет (найдено по лейблам %s: %d)",
                 rule.name,
                 ", ".join(rule.labels),
-                ", ".join(rule.sources),
+                len(found),
             )
             return 0
 
@@ -59,16 +56,22 @@ class LabelMoverBot:
         logger.info("Правило %r: перенесено %d из %d", rule.name, moved, len(pages))
         return moved
 
-    def _move(self, rule: Rule, page: Page) -> bool:
-        if page.parent_id == rule.target:
-            logger.debug(
-                "Правило %r: страница %s (%s) уже под целевой, пропуск",
-                rule.name,
-                page.id,
-                page.title,
-            )
-            return False
+    @staticmethod
+    def _needs_move(rule: Rule, page: Page) -> bool:
+        """Нужно ли переносить страницу.
 
+        CQL по `ancestor` возвращает всё поддерево источника, а целевая страница
+        может лежать внутри него — тогда в выборку попадают и уже перенесённые
+        страницы. Отсеиваем их до логирования, чтобы в логах были только те,
+        которые действительно переезжают.
+
+        Проверяется всё поддерево target, а не только прямые дети: у перенесённой
+        страницы её дочерние с тем же лейблом остаются под ней, и выдёргивать их
+        наверх нельзя — это сломало бы иерархию.
+        """
+        return page.id != rule.target and not page.is_under(rule.target)
+
+    def _move(self, rule: Rule, page: Page) -> bool:
         if self._cfg.dry_run:
             logger.info(
                 "[DRY_RUN] Правило %r: перенёс бы %s %r под %s",

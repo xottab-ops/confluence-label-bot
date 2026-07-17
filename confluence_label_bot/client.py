@@ -21,7 +21,16 @@ class Page:
     title: str
     version: int
     space_key: str
-    parent_id: str | None
+    # Полный путь предков от корня к непосредственному родителю.
+    ancestor_ids: tuple[str, ...]
+
+    @property
+    def parent_id(self) -> str | None:
+        return self.ancestor_ids[-1] if self.ancestor_ids else None
+
+    def is_under(self, page_id: str) -> bool:
+        """Лежит ли страница в поддереве page_id (на любой глубине)."""
+        return page_id in self.ancestor_ids
 
 
 class ConfluenceError(RuntimeError):
@@ -83,14 +92,14 @@ class ConfluenceClient:
 
     @staticmethod
     def _to_page(data: dict[str, Any]) -> Page:
+        # ancestors приходят от корня к непосредственному родителю.
         ancestors = data.get("ancestors") or []
-        parent_id = str(ancestors[-1]["id"]) if ancestors else None
         return Page(
             id=str(data["id"]),
             title=data.get("title", ""),
             version=int(data.get("version", {}).get("number", 0)),
             space_key=(data.get("space") or {}).get("key", ""),
-            parent_id=parent_id,
+            ancestor_ids=tuple(str(a["id"]) for a in ancestors),
         )
 
     @staticmethod
