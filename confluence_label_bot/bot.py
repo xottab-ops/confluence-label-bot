@@ -39,7 +39,12 @@ class LabelMoverBot:
         )
         pages = [p for p in found if self._needs_move(rule, p)]
 
-        logger.info("Правило %r: найдено страниц к переносу: %d", rule.name, len(pages))
+        logger.info(
+            "Правило %r: найдено по лейблам: %d, из них к переносу: %d",
+            rule.name,
+            len(found),
+            len(pages),
+        )
         if not pages:
             return 0
 
