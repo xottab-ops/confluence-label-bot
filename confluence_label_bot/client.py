@@ -105,15 +105,16 @@ class ConfluenceClient:
         return resp.json()
 
     @staticmethod
-    def _to_page(data: dict[str, Any]) -> Page:
-        # ancestors приходят от корня к непосредственному родителю.
-        ancestors = data.get("ancestors") or []
+    def _to_page(data: dict[str, Any], ancestor_ids: Sequence[str] | None = None) -> Page:
+        if ancestor_ids is None:
+            # ancestors приходят от корня к непосредственному родителю.
+            ancestor_ids = [str(a["id"]) for a in (data.get("ancestors") or [])]
         return Page(
             id=str(data["id"]),
             title=data.get("title", ""),
             version=int(data.get("version", {}).get("number", 0)),
             space_key=(data.get("space") or {}).get("key", ""),
-            ancestor_ids=tuple(str(a["id"]) for a in ancestors),
+            ancestor_ids=tuple(ancestor_ids),
         )
 
     def _iter_paged(self, path: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -150,6 +151,32 @@ class ConfluenceClient:
         results = ((data.get("metadata") or {}).get("labels") or {}).get("results") or []
         return {str(label.get("name", "")) for label in results}
 
+    def _walk_subtree(
+        self, root_id: str
+    ) -> Iterator[tuple[dict[str, Any], tuple[str, ...]]]:
+        """Обойти поддерево root_id, спускаясь по /child/page.
+
+        Отдаёт пару (страница, её путь предков). Путь строится по ходу спуска,
+        поэтому `expand=ancestors` не нужен — на /descendant/page он и приводил
+        к HTTP 500.
+        """
+        # (id родителя, путь предков его детей)
+        queue: list[tuple[str, tuple[str, ...]]] = [(root_id, (root_id,))]
+        seen: set[str] = {root_id}
+
+        while queue:
+            parent_id, path = queue.pop()
+            for item in self._iter_paged(
+                f"/content/{parent_id}/child/page",
+                {"expand": "version,space,metadata.labels"},
+            ):
+                page_id = str(item["id"])
+                if page_id in seen:  # страховка от зацикливания
+                    continue
+                seen.add(page_id)
+                yield item, path
+                queue.append((page_id, path + (page_id,)))
+
     # ── публичное ───────────────────────────────────────────────────────────
     def find_pages_with_labels_under(
         self,
@@ -160,23 +187,20 @@ class ConfluenceClient:
     ) -> list[Page]:
         """Страницы в поддереве ancestor_id с любым из labels (любая глубина).
 
-        Обходит поддерево через /content/{id}/descendant/page и сверяет лейблы
-        сам, вместо поиска по CQL. Так выборка читается из базы, а не из
-        Lucene-индекса: индекс обновляется асинхронно, а в кластере живёт на
-        каждой ноде свой, поэтому CQL умеет молча возвращать неполный результат.
+        Обходит дерево по /child/page и сверяет лейблы сам, вместо поиска по CQL.
+        Так выборка читается из базы, а не из Lucene-индекса: индекс обновляется
+        асинхронно, а в кластере живёт на каждой ноде свой, поэтому CQL умеет
+        молча возвращать неполный результат.
         """
         wanted = {label.lower() for label in labels}
         pages: list[Page] = []
         total = 0
 
-        for item in self._iter_paged(
-            f"/content/{ancestor_id}/descendant/page",
-            {"expand": "version,space,ancestors,metadata.labels"},
-        ):
+        for item, ancestor_ids in self._walk_subtree(ancestor_id):
             total += 1
             if not {name.lower() for name in self._labels_of(item)} & wanted:
                 continue
-            page = self._to_page(item)
+            page = self._to_page(item, ancestor_ids)
             if space_key and page.space_key != space_key:
                 continue
             pages.append(page)
