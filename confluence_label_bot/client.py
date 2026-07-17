@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from http.cookiejar import DefaultCookiePolicy
 from typing import Any
 
 import requests
@@ -50,7 +51,20 @@ class ConfluenceClient:
 
         session = requests.Session()
         session.verify = self._resolve_verify(config)
-        session.headers.update({"Accept": "application/json"})
+        session.headers.update(
+            {
+                "Accept": "application/json",
+                # Ответы REST не должны браться из кеша прокси между ботом и Confluence.
+                "Cache-Control": "no-cache",
+            }
+        )
+
+        # Не принимать куки. Confluence на первый же запрос отдаёт JSESSIONID, и
+        # дальше авторизует по сессии, а не по токену: стоит той сессии протухнуть
+        # или привязаться к анониму — и бот начинает видеть лишь часть страниц,
+        # хотя PAT валиден. Без кук каждый запрос аутентифицируется заново.
+        session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+
         if config.pat:
             session.headers["Authorization"] = f"Bearer {config.pat}"
             logger.debug("Авторизация: Personal Access Token (Bearer)")
@@ -103,36 +117,28 @@ class ConfluenceClient:
         )
 
     @staticmethod
-    def _cql_in(field: str, values: Sequence[str], *, quote: bool = True) -> str:
-        """Условие вида `field in ("a","b")` (для одного значения — `field="a"`).
-
-        ID страниц (`ancestor`) передаются без кавычек — CQL ждёт там число.
-        """
-        rendered = [
-            '"{}"'.format(v.replace('"', '\\"')) if quote else v for v in values
-        ]
-        if len(rendered) == 1:
-            return f"{field}={rendered[0]}"
-        return f"{field} in ({','.join(rendered)})"
+    def _cql_in(field: str, values: Sequence[str]) -> str:
+        """Условие вида `field in ("a","b")` (для одного значения — `field="a"`)."""
+        quoted = ['"{}"'.format(v.replace('"', '\\"')) for v in values]
+        if len(quoted) == 1:
+            return f"{field}={quoted[0]}"
+        return f"{field} in ({','.join(quoted)})"
 
     # ── публичное ───────────────────────────────────────────────────────────
     def find_pages_with_labels_under(
         self,
         *,
-        ancestor_ids: Sequence[str],
+        ancestor_id: str,
         labels: Sequence[str],
         space_key: str | None = None,
     ) -> list[Page]:
-        """Страницы в поддеревьях ancestor_ids с любым из labels (любая глубина).
+        """Страницы в поддереве ancestor_id с любым из labels (любая глубина).
 
         Оператор CQL `ancestor` находит потомков на любом уровне; несколько
-        источников и лейблов объединяются по ИЛИ через `in (...)`.
+        лейблов объединяются по ИЛИ через `in (...)`.
         """
-        parts = [
-            "type=page",
-            self._cql_in("label", labels),
-            self._cql_in("ancestor", ancestor_ids, quote=False),
-        ]
+        # ID страницы в CQL — без кавычек, там ожидается число.
+        parts = ["type=page", self._cql_in("label", labels), f"ancestor={ancestor_id}"]
         if space_key:
             parts.insert(0, self._cql_in("space", [space_key]))
         cql = " and ".join(parts)
@@ -158,6 +164,17 @@ class ConfluenceClient:
                 break
             start += limit
         return pages
+
+    def get_current_user(self) -> str:
+        """Под каким пользователем бот работает.
+
+        Видимость страниц определяется правами именно этого пользователя: если
+        авторизация незаметно откатилась на анонима, выборка окажется неполной.
+        """
+        data = self._request("GET", "/user/current")
+        name = data.get("username") or data.get("accountId") or "?"
+        display = data.get("displayName") or ""
+        return f"{name} ({display})" if display else name
 
     def get_page(self, page_id: str) -> Page:
         data = self._request(

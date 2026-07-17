@@ -33,22 +33,16 @@ class LabelMoverBot:
 
     def _apply_rule(self, rule: Rule) -> int:
         found = self._client.find_pages_with_labels_under(
-            ancestor_ids=rule.sources,
+            ancestor_id=rule.source,
             labels=rule.labels,
             space_key=rule.space_key,
         )
         pages = [p for p in found if self._needs_move(rule, p)]
 
+        logger.info("Правило %r: найдено страниц к переносу: %d", rule.name, len(pages))
         if not pages:
-            logger.debug(
-                "Правило %r: страниц к переносу нет (найдено по лейблам %s: %d)",
-                rule.name,
-                ", ".join(rule.labels),
-                len(found),
-            )
             return 0
 
-        logger.info("Правило %r: найдено страниц к переносу: %d", rule.name, len(pages))
         moved = 0
         for page in pages:
             if self._move(rule, page):
@@ -105,9 +99,9 @@ class LabelMoverBot:
         )
         for rule in cfg.rules:
             logger.info(
-                "  %s: [%s] --(%s)--> %s",
+                "  %s: %s --(%s)--> %s",
                 rule.name,
-                ", ".join(rule.sources),
+                rule.source,
                 ", ".join(rule.labels),
                 rule.target,
             )

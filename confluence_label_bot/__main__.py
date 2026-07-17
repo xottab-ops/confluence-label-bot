@@ -28,12 +28,15 @@ def _setup_logging(level: str) -> None:
 def _check(client: ConfluenceClient, config: Config, logger: logging.Logger) -> int:
     """Проверить доступность всех страниц, упомянутых в правилах."""
     ok = True
+    try:
+        logger.info("Бот работает под пользователем: %s", client.get_current_user())
+    except ConfluenceError as exc:
+        logger.error("Не удалось определить текущего пользователя: %s", exc)
+        ok = False
+
     for rule in config.rules:
         logger.info("Правило %r (лейблы: %s):", rule.name, ", ".join(rule.labels))
-        for page_id, role in [
-            *((s, "источник") for s in rule.sources),
-            (rule.target, "назначение"),
-        ]:
+        for page_id, role in [(rule.source, "источник"), (rule.target, "назначение")]:
             try:
                 page = client.get_page(page_id)
             except ConfluenceError as exc:

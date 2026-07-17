@@ -20,12 +20,13 @@ class RulesError(RuntimeError):
 class Rule:
     """Одна связка «откуда → куда по лейблам».
 
-    sources и labels могут содержать несколько значений: страница переносится,
-    если лежит в поддереве любого из sources и имеет любой из labels.
+    source и target — ровно по одной странице. labels могут содержать несколько
+    значений: страница переносится, если лежит в поддереве source и имеет любой
+    из labels.
     """
 
     name: str
-    sources: tuple[str, ...]
+    source: str
     labels: tuple[str, ...]
     target: str
     space_key: str | None
@@ -58,36 +59,45 @@ def _as_str_list(value: Any, *, rule: str, field: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _single(value: Any, *, rule: str, field: str) -> str:
+    """Привести значение к одной непустой строке, отвергая списки.
+
+    source и target — всегда одна страница: в Confluence страница не может
+    лежать под несколькими родителями, а несколько источников разводятся
+    отдельными правилами.
+    """
+    if isinstance(value, list):
+        raise RulesError(
+            f"Правило {rule!r}: поле {field!r} должно содержать ровно одну страницу, "
+            f"а не список. Заведите отдельное правило на каждую."
+        )
+    values = _as_str_list(value, rule=rule, field=field)
+    return values[0]
+
+
 def _parse_rule(data: Any, index: int) -> Rule:
     if not isinstance(data, dict):
         raise RulesError(f"Правило #{index + 1} должно быть словарём, получено: {type(data).__name__}")
 
     name = str(data.get("name") or f"rule-{index + 1}").strip()
 
-    unknown = set(data) - {"name", "sources", "labels", "target", "space"}
+    unknown = set(data) - {"name", "source", "labels", "target", "space"}
     if unknown:
         raise RulesError(
             f"Правило {name!r}: неизвестные поля: {', '.join(sorted(unknown))}"
         )
 
-    sources = _as_str_list(data.get("sources"), rule=name, field="sources")
     labels = _as_str_list(data.get("labels"), rule=name, field="labels")
-    targets = _as_str_list(data.get("target"), rule=name, field="target")
-    if len(targets) > 1:
-        raise RulesError(
-            f"Правило {name!r}: поле 'target' должно содержать ровно одну страницу "
-            f"(страница не может лежать под несколькими родителями). "
-            f"Для нескольких назначений заведите отдельные правила."
-        )
-    target = targets[0]
+    source = _single(data.get("source"), rule=name, field="source")
+    target = _single(data.get("target"), rule=name, field="target")
 
-    if target in sources:
-        raise RulesError(f"Правило {name!r}: 'target' не должен совпадать с 'sources'")
+    if target == source:
+        raise RulesError(f"Правило {name!r}: 'target' не должен совпадать с 'source'")
 
     space = data.get("space")
     space_key = str(space).strip() if space is not None and str(space).strip() else None
 
-    return Rule(name=name, sources=sources, labels=labels, target=target, space_key=space_key)
+    return Rule(name=name, source=source, labels=labels, target=target, space_key=space_key)
 
 
 def load_rules(path: str | Path) -> list[Rule]:
@@ -117,6 +127,18 @@ def load_rules(path: str | Path) -> list[Rule]:
     duplicates = {n for n in names if names.count(n) > 1}
     if duplicates:
         raise RulesError(f"Повторяющиеся имена правил: {', '.join(sorted(duplicates))}")
+
+    # source уникален глобально: одна страница-источник обслуживается ровно
+    # одним правилом, иначе непонятно, куда переносить подходящую страницу.
+    by_source: dict[str, list[str]] = {}
+    for rule in rules:
+        by_source.setdefault(rule.source, []).append(rule.name)
+    conflicts = {src: names_ for src, names_ in by_source.items() if len(names_) > 1}
+    if conflicts:
+        details = "; ".join(
+            f"{src} → правила {', '.join(names_)}" for src, names_ in sorted(conflicts.items())
+        )
+        raise RulesError(f"Один и тот же 'source' указан в нескольких правилах: {details}")
 
     logger.debug("Загружено правил: %d из %s", len(rules), file)
     return rules
