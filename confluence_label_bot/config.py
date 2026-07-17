@@ -43,6 +43,7 @@ class Config:
     username: str | None
     password: str | None
     verify_ssl: bool
+    ca_cert_dir: str | None
 
     space_key: str
     source_page_id: str
@@ -82,6 +83,7 @@ class Config:
             username=username,
             password=password,
             verify_ssl=_get_bool("CONFLUENCE_VERIFY_SSL", True),
+            ca_cert_dir=(os.getenv("CONFLUENCE_CA_CERT_DIR") or "").strip() or None,
             space_key=_require("CONFLUENCE_SPACE_KEY"),
             source_page_id=source_page_id,
             target_page_id=target_page_id,

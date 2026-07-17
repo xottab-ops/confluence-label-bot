@@ -8,6 +8,7 @@ from typing import Any
 
 import requests
 
+from .certs import build_ca_bundle
 from .config import Config
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class ConfluenceClient:
         self._api = f"{self._base}/rest/api"
 
         session = requests.Session()
-        session.verify = config.verify_ssl
+        session.verify = self._resolve_verify(config)
         session.headers.update({"Accept": "application/json"})
         if config.pat:
             session.headers["Authorization"] = f"Bearer {config.pat}"
@@ -47,6 +48,21 @@ class ConfluenceClient:
             session.auth = (config.username or "", config.password or "")
             logger.debug("Авторизация: Basic (username + password)")
         self._session = session
+
+    @staticmethod
+    def _resolve_verify(config: Config) -> bool | str:
+        """Определить значение для requests `verify`.
+
+        - verify_ssl=False → проверка отключена;
+        - задана папка с корневыми сертификатами → путь к собранному CA-бандлу;
+        - иначе → стандартная проверка по системному/`certifi` хранилищу.
+        """
+        if not config.verify_ssl:
+            logger.warning("Проверка SSL-сертификата отключена (CONFLUENCE_VERIFY_SSL=false)")
+            return False
+        if config.ca_cert_dir:
+            return build_ca_bundle(config.ca_cert_dir)
+        return True
 
     # ── внутреннее ──────────────────────────────────────────────────────────
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
