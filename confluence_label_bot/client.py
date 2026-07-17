@@ -160,9 +160,25 @@ class ConfluenceClient:
             )
             results = data.get("results", [])
             pages.extend(self._to_page(item) for item in results)
-            if len(results) < limit:
+
+            # Признак конца — отсутствие ссылки на следующую страницу, а не то,
+            # что результатов пришло меньше запрошенного. Порция бывает неполной
+            # и в середине выдачи: сервер вправе урезать limit до своего максимума,
+            # а Confluence вдобавок отсеивает недоступные страницы уже после того,
+            # как достал порцию из индекса.
+            if not (data.get("_links") or {}).get("next"):
                 break
-            start += limit
+
+            # Шагаем на фактический limit из ответа: запрошенный сервер мог урезать.
+            step = int(data.get("limit") or 0) or len(results)
+            if step <= 0:
+                logger.warning(
+                    "Пагинация: сервер обещает следующую страницу, но порция пуста "
+                    "(start=%d). Прерываю, иначе цикл не кончится.",
+                    start,
+                )
+                break
+            start += step
         return pages
 
     def get_current_user(self) -> str:
