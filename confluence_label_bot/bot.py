@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta
+
+from croniter import croniter
 
 from .client import ConfluenceClient, ConfluenceError, Page
 from .config import Config
 from .rules import Rule
 
 logger = logging.getLogger(__name__)
+
+
+def _humanize(delta: timedelta) -> str:
+    total = int(delta.total_seconds())
+    if total < 60:
+        return f"{total} с"
+    minutes, seconds = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes} мин {seconds} с"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} ч {minutes} мин"
 
 
 class LabelMoverBot:
@@ -94,12 +108,16 @@ class LabelMoverBot:
         )
         return True
 
+    def next_run_after(self, moment: datetime) -> datetime:
+        """Время следующего запуска по расписанию, строго после moment."""
+        return croniter(self._cfg.cron, moment).get_next(datetime)
+
     def run_forever(self) -> None:
         cfg = self._cfg
         logger.info(
-            "Демон запущен. Правил: %d, интервал=%dс, dry_run=%s",
+            "Демон запущен. Правил: %d, расписание=%r, dry_run=%s",
             len(cfg.rules),
-            cfg.poll_interval_seconds,
+            cfg.cron,
             cfg.dry_run,
         )
         for rule in cfg.rules:
@@ -111,8 +129,19 @@ class LabelMoverBot:
                 rule.target,
             )
         while True:
+            # Считаем от текущего момента, а не от прошлого срабатывания: если
+            # проход затянулся дольше промежутка между запусками, пропущенные
+            # сроки не копятся — просто идём к ближайшему будущему.
+            now = datetime.now()
+            next_run = self.next_run_after(now)
+            logger.info(
+                "Следующий запуск: %s (через %s)",
+                next_run.strftime("%Y-%m-%d %H:%M:%S"),
+                _humanize(next_run - now),
+            )
+            time.sleep(max(0.0, (next_run - now).total_seconds()))
+
             try:
                 self.run_once()
             except Exception:  # noqa: BLE001 — демон не должен падать на неожиданной ошибке
                 logger.exception("Непредвиденная ошибка в цикле")
-            time.sleep(cfg.poll_interval_seconds)

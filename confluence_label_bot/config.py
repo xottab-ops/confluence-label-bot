@@ -5,11 +5,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from croniter import croniter
 from dotenv import load_dotenv
 
 from .rules import Rule, RulesError, load_rules
 
 DEFAULT_RULES_FILE = "rules.yaml"
+# Каждую минуту — как прежний интервал по умолчанию в 60 секунд.
+DEFAULT_CRON = "* * * * *"
 
 
 class ConfigError(RuntimeError):
@@ -23,14 +26,15 @@ def _get_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _get_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{name} должен быть целым числом, получено: {raw!r}") from exc
+def _get_cron(name: str, default: str) -> str:
+    raw = (os.getenv(name) or "").strip() or default
+    if not croniter.is_valid(raw):
+        raise ConfigError(
+            f"{name} должен быть cron-выражением вида «мин час день месяц день_недели», "
+            f"получено: {raw!r}. Примеры: «*/5 * * * *» — каждые 5 минут, "
+            f"«0 * * * *» — в начале каждого часа, «0 9 * * 1-5» — в 9:00 по будням."
+        )
+    return raw
 
 
 def _require(name: str) -> str:
@@ -51,7 +55,7 @@ class Config:
 
     rules: tuple[Rule, ...]
 
-    poll_interval_seconds: int
+    cron: str
     log_level: str
     dry_run: bool
 
@@ -88,7 +92,7 @@ class Config:
             verify_ssl=_get_bool("CONFLUENCE_VERIFY_SSL", True),
             ca_cert_dir=(os.getenv("CONFLUENCE_CA_CERT_DIR") or "").strip() or None,
             rules=tuple(rules),
-            poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 60),
+            cron=_get_cron("CRON_SCHEDULE", DEFAULT_CRON),
             log_level=(os.getenv("LOG_LEVEL") or "INFO").strip().upper(),
             dry_run=_get_bool("DRY_RUN", False),
         )
