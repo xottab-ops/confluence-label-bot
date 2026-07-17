@@ -1,0 +1,19 @@
+[project]
+name = "confluence-label-bot"
+version = "0.1.0"
+description = "Бот для перемещения страниц Confluence по лейблу под заданную страницу"
+requires-python = ">=3.14"
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+confluence-label-bot = "confluence_label_bot.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/confluence_label_bot"]
