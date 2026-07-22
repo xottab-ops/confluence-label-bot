@@ -10,6 +10,7 @@ from croniter import croniter
 
 from .client import ConfluenceClient, ConfluenceError, Page
 from .config import Config
+from .health import HealthState
 from .rules import Rule
 
 logger = logging.getLogger(__name__)
@@ -27,9 +28,15 @@ def _humanize(delta: timedelta) -> str:
 
 
 class LabelMoverBot:
-    def __init__(self, config: Config, client: ConfluenceClient) -> None:
+    def __init__(
+        self,
+        config: Config,
+        client: ConfluenceClient,
+        health: HealthState | None = None,
+    ) -> None:
         self._cfg = config
         self._client = client
+        self._health = health
 
     def run_once(self) -> int:
         """Один проход по всем правилам.
@@ -112,6 +119,22 @@ class LabelMoverBot:
         """Время следующего запуска по расписанию, строго после moment."""
         return croniter(self._cfg.cron, moment).get_next(datetime)
 
+    def _sleep_until(self, deadline: datetime) -> None:
+        """Спать до deadline короткими тиками, обновляя heartbeat.
+
+        Цельный `time.sleep` на весь промежуток между запусками при редком cron
+        (напр. раз в сутки) протухил бы heartbeat, и liveness-проба убила бы
+        живой под. Поэтому спим по чуть-чуть и на каждом тике отмечаемся живыми.
+        """
+        tick = 5.0
+        while True:
+            remaining = (deadline - datetime.now()).total_seconds()
+            if remaining <= 0:
+                return
+            if self._health:
+                self._health.beat()
+            time.sleep(min(tick, remaining))
+
     def run_forever(self) -> None:
         cfg = self._cfg
         logger.info(
@@ -128,6 +151,12 @@ class LabelMoverBot:
                 ", ".join(rule.labels),
                 rule.target,
             )
+
+        # Стартовая проверка связи → readiness. До первого успешного контакта с
+        # Confluence под считается «не готов» (readiness=false), но «живым»
+        # (liveness=true) — k8s не гонит на него трафик, но и не рестартит.
+        self._check_connectivity()
+
         while True:
             # Считаем от текущего момента, а не от прошлого срабатывания: если
             # проход затянулся дольше промежутка между запусками, пропущенные
@@ -139,9 +168,29 @@ class LabelMoverBot:
                 next_run.strftime("%Y-%m-%d %H:%M:%S"),
                 _humanize(next_run - now),
             )
-            time.sleep(max(0.0, (next_run - now).total_seconds()))
+            self._sleep_until(next_run)
 
             try:
                 self.run_once()
-            except Exception:  # noqa: BLE001 — демон не должен падать на неожиданной ошибке
+            except Exception as exc:  # noqa: BLE001 — демон не должен падать на неожиданной ошибке
                 logger.exception("Непредвиденная ошибка в цикле")
+                if self._health:
+                    self._health.record_run(False, str(exc))
+            else:
+                if self._health:
+                    self._health.record_run(True)
+
+    def _check_connectivity(self) -> None:
+        """Проверить связь с Confluence и выставить readiness."""
+        if self._health is None:
+            return
+        try:
+            user = self._client.get_current_user()
+        except ConfluenceError as exc:
+            logger.error(
+                "Стартовая проверка связи с Confluence не прошла (readiness=false): %s",
+                exc,
+            )
+            return
+        logger.info("Связь с Confluence есть, работаем под пользователем: %s", user)
+        self._health.set_ready(True)

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from http.cookiejar import DefaultCookiePolicy
 from typing import Any
@@ -45,9 +46,20 @@ class ConfluenceClient:
     либо Basic (username + password).
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self, config: Config, heartbeat: Callable[[], None] | None = None
+    ) -> None:
         self._base = config.base_url
         self._api = f"{self._base}/rest/api"
+
+        # Троттлинг: минимальный интервал между запросами (борьба с 429).
+        self._delay = config.query_delay
+        self._max_retries = config.max_retries
+        self._retry_max_wait = config.retry_max_wait
+        self._last_request_at: float | None = None
+        # Колбэк «я жив» для health-проб: дёргается на каждом запросе, чтобы во
+        # время долгого обхода поддерева heartbeat оставался свежим.
+        self._heartbeat = heartbeat
 
         session = requests.Session()
         session.verify = self._resolve_verify(config)
@@ -93,20 +105,80 @@ class ConfluenceClient:
         return True
 
     # ── внутреннее ──────────────────────────────────────────────────────────
+    def _throttle(self) -> None:
+        """Выдержать паузу так, чтобы между запросами было не меньше _delay.
+
+        Не «спим всегда», а гарантируем минимальный интервал: если между
+        соседними запросами и так прошло достаточно, пауза не добавляется.
+        """
+        if self._delay <= 0:
+            self._last_request_at = time.monotonic()
+            return
+        if self._last_request_at is not None:
+            remaining = self._delay - (time.monotonic() - self._last_request_at)
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_request_at = time.monotonic()
+
+    def _retry_after(self, resp: requests.Response, attempt: int) -> float:
+        """Сколько ждать перед повтором после 429.
+
+        Приоритет — заголовку Retry-After (в секундах). Если его нет или он в
+        формате HTTP-date, откатываемся к экспоненциальному backoff. Итог
+        ограничен сверху _retry_max_wait, чтобы огромный Retry-After не подвесил
+        бота на часы.
+        """
+        raw = resp.headers.get("Retry-After")
+        if raw:
+            try:
+                return min(float(raw), self._retry_max_wait)
+            except ValueError:
+                pass  # HTTP-date не парсим — уходим в backoff
+        base = self._delay if self._delay > 0 else 1.0
+        return min(base * (2**attempt), self._retry_max_wait)
+
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         url = path if path.startswith("http") else f"{self._api}{path}"
-        try:
-            resp = self._session.request(method, url, timeout=30, **kwargs)
-        except requests.RequestException as exc:
-            raise ConfluenceError(f"Сетевая ошибка при {method} {url}: {exc}") from exc
+        # attempt 0 — основная попытка, далее до _max_retries повторов на 429.
+        for attempt in range(self._max_retries + 1):
+            self._throttle()
+            if self._heartbeat:
+                self._heartbeat()
+            try:
+                resp = self._session.request(method, url, timeout=30, **kwargs)
+            except requests.RequestException as exc:
+                raise ConfluenceError(
+                    f"Сетевая ошибка при {method} {url}: {exc}"
+                ) from exc
 
-        if not resp.ok:
-            raise ConfluenceError(
-                f"{method} {url} → HTTP {resp.status_code}: {resp.text[:500]}"
-            )
-        if resp.status_code == 204 or not resp.content:
-            return None
-        return resp.json()
+            if resp.status_code == 429 and attempt < self._max_retries:
+                wait = self._retry_after(resp, attempt)
+                logger.warning(
+                    "429 Too Many Requests: %s %s. Жду %.1f с и повторяю "
+                    "(попытка %d из %d).",
+                    method,
+                    url,
+                    wait,
+                    attempt + 1,
+                    self._max_retries,
+                )
+                time.sleep(wait)
+                continue
+
+            if not resp.ok:
+                raise ConfluenceError(
+                    f"{method} {url} → HTTP {resp.status_code}: {resp.text[:500]}"
+                )
+            if resp.status_code == 204 or not resp.content:
+                return None
+            return resp.json()
+
+        # Досюда доходим, только если последняя попытка тоже была 429 (её ветка
+        # выше уже не делает continue) — но на всякий случай явный отказ.
+        raise ConfluenceError(
+            f"{method} {url} → HTTP 429: лимит запросов не спал за "
+            f"{self._max_retries} повторов"
+        )
 
     @staticmethod
     def _to_page(data: dict[str, Any], ancestor_ids: Sequence[str] | None = None) -> Page:

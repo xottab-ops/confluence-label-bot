@@ -29,6 +29,45 @@ def _get_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _get_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} должен быть целым числом, получено: {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{name} должен быть не меньше {minimum}, получено: {value}")
+    return value
+
+
+def _get_float(name: str, default: float, *, minimum: float | None = None) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} должен быть числом, получено: {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{name} должен быть не меньше {minimum}, получено: {value}")
+    return value
+
+
+def _require_float(name: str, *, minimum: float | None = None) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        raise ConfigError(f"Обязательная переменная окружения {name} не задана")
+    try:
+        value = float(raw.strip())
+    except ValueError as exc:
+        raise ConfigError(f"{name} должен быть числом, получено: {raw.strip()!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{name} должен быть не меньше {minimum}, получено: {value}")
+    return value
+
+
 def _get_cron(name: str, default: str) -> str:
     raw = (os.getenv(name) or "").strip() or default
     if not croniter.is_valid(raw):
@@ -82,6 +121,15 @@ class Config:
     log_level: str
     dry_run: bool
 
+    # Троттлинг обращений к Confluence и обработка 429.
+    query_delay: float
+    max_retries: int
+    retry_max_wait: float
+
+    # Health-сервер для проб Kubernetes.
+    health_port: int
+    health_liveness_timeout: float
+
     @classmethod
     def load(cls, rules_file: str | None = None) -> "Config":
         # load_dotenv не перезаписывает уже выставленные переменные окружения,
@@ -124,4 +172,11 @@ class Config:
             cron=_get_cron("CRON_SCHEDULE", DEFAULT_CRON),
             log_level=(os.getenv("LOG_LEVEL") or "INFO").strip().upper(),
             dry_run=_get_bool("DRY_RUN", False),
+            query_delay=_require_float("CONFLUENCE_QUERY_DELAY", minimum=0.0),
+            max_retries=_get_int("CONFLUENCE_MAX_RETRIES", 3, minimum=0),
+            retry_max_wait=_get_float("CONFLUENCE_RETRY_MAX_WAIT", 60.0, minimum=0.0),
+            health_port=_get_int("HEALTH_PORT", 8080, minimum=1),
+            health_liveness_timeout=_get_float(
+                "HEALTH_LIVENESS_TIMEOUT", 300.0, minimum=1.0
+            ),
         )

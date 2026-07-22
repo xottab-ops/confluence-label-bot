@@ -15,6 +15,7 @@ import sys
 from .bot import LabelMoverBot
 from .client import ConfluenceClient, ConfluenceError
 from .config import Config, ConfigError
+from .health import HealthState, start_health_server
 
 
 def _setup_logging(level: str) -> None:
@@ -80,12 +81,16 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(config.log_level)
     logger = logging.getLogger("confluence_label_bot")
 
-    client = ConfluenceClient(config)
+    # Состояние здоровья есть всегда; heartbeat дёргается на каждом запросе к
+    # Confluence — чтобы во время долгого обхода поддерева проба видела процесс
+    # живым. Сам HTTP-сервер поднимаем только в режиме демона (ниже).
+    health = HealthState(config.health_liveness_timeout)
+    client = ConfluenceClient(config, heartbeat=health.beat)
 
     if args.check:
         return _check(client, config, logger)
 
-    bot = LabelMoverBot(config, client)
+    bot = LabelMoverBot(config, client, health=health)
 
     if args.once:
         try:
@@ -94,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("Ошибка: %s", exc)
             return 1
         return 0
+
+    start_health_server(health, config.health_port)
 
     try:
         bot.run_forever()
