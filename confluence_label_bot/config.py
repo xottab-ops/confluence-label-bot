@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -9,6 +10,8 @@ from croniter import croniter
 from dotenv import load_dotenv
 
 from .rules import Rule, RulesError, load_rules
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_RULES_FILE = "rules.yaml"
 # Каждую минуту — как прежний интервал по умолчанию в 60 секунд.
@@ -35,6 +38,26 @@ def _get_cron(name: str, default: str) -> str:
             f"«0 * * * *» — в начале каждого часа, «0 9 * * 1-5» — в 9:00 по будням."
         )
     return raw
+
+
+DEFAULT_ENV_FILE = "secrets.env"
+
+
+def _load_extra_env_file() -> None:
+    """Подгрузить дополнительный env-файл, если включён LOAD_ENV_FILE.
+
+    Путь берётся из ENV_FILE (по умолчанию secrets.env). Значения из файла
+    переопределяют уже заданные переменные (override=True). Если флаг включён,
+    но файла нет — просто пропускаем (значения возьмутся из .env/окружения).
+    """
+    if not _get_bool("LOAD_ENV_FILE", False):
+        return
+
+    path = (os.getenv("ENV_FILE") or "").strip() or DEFAULT_ENV_FILE
+    if not os.path.isfile(path):
+        logger.warning("LOAD_ENV_FILE включён, но файл ENV_FILE не найден — пропускаю: %r", path)
+        return
+    load_dotenv(path, override=True)
 
 
 def _require(name: str) -> str:
@@ -64,6 +87,12 @@ class Config:
         # load_dotenv не перезаписывает уже выставленные переменные окружения,
         # что удобно при запуске в контейнере/CI, где значения приходят извне.
         load_dotenv()
+
+        # Опционально: подтянуть значения из отдельного файла (напр. с секретами).
+        # Включается флагом LOAD_ENV_FILE; путь берётся из ENV_FILE. В отличие от
+        # основного .env, этот файл имеет приоритет — override=True переопределяет
+        # уже заданные переменные (в т.ч. пришедшие из .env и окружения).
+        _load_extra_env_file()
 
         base_url = _require("CONFLUENCE_BASE_URL").rstrip("/")
 

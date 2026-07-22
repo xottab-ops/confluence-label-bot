@@ -1,4 +1,7 @@
 .env
+secrets.env
+*.env
+!.env.example
 rules.yaml
 .venv/
 __pycache__/
