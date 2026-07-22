@@ -77,10 +77,14 @@ class ConfluenceClient:
     def _resolve_verify(config: Config) -> bool | str:
         """Определить значение для requests `verify`.
 
+        - схема http → соединение без TLS, сертификаты не участвуют;
         - verify_ssl=False → проверка отключена;
         - задана папка с корневыми сертификатами → путь к собранному CA-бандлу;
         - иначе → стандартная проверка по системному/`certifi` хранилищу.
         """
+        if not config.base_url.lower().startswith("https://"):
+            logger.debug("Base URL по http — TLS нет, сертификаты не используются")
+            return True
         if not config.verify_ssl:
             logger.warning("Проверка SSL-сертификата отключена (CONFLUENCE_VERIFY_SSL=false)")
             return False
