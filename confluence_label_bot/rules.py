@@ -116,9 +116,16 @@ def load_rules(path: str | Path) -> list[Rule]:
 
     # Допускаем как {rules: [...]}, так и просто список правил на верхнем уровне.
     items = raw.get("rules") if isinstance(raw, dict) else raw
-    if not isinstance(items, list) or not items:
+
+    # Пустая или отсутствующая секция — не ошибка: у файла правил будут и другие
+    # секции со своими задачами, и установке может быть нужна лишь часть из них.
+    # «Не настроено ни одной задачи» проверяется при сборке задач, а не здесь.
+    if items is None:
+        items = []
+    if not isinstance(items, list):
         raise RulesError(
-            f"{file}: ожидался непустой список правил (ключ 'rules' либо список верхнего уровня)"
+            f"{file}: ожидался список правил (ключ 'rules' либо список верхнего уровня), "
+            f"получено: {type(items).__name__}"
         )
 
     rules = [_parse_rule(item, i) for i, item in enumerate(items)]

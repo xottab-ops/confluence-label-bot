@@ -1,0 +1,4 @@
+# Зависимости только для разработки и тестов. В рантайме не нужны:
+# pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+pytest>=8.0

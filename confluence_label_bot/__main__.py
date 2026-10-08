@@ -1,9 +1,10 @@
 """Точка входа: запуск бота как демона.
 
 Использование:
-    python -m confluence_label_bot            # демон (по интервалу)
-    python -m confluence_label_bot --once     # один проход и выход
-    python -m confluence_label_bot --check     # проверка подключения и выход
+    python -m confluence_label_bot                    # демон (по расписаниям задач)
+    python -m confluence_label_bot --once             # один проход всех задач и выход
+    python -m confluence_label_bot --only moves       # только одна задача
+    python -m confluence_label_bot --check            # проверка подключения и выход
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import sys
 from .bot import LabelMoverBot
 from .client import ConfluenceClient, ConfluenceError
 from .config import Config, ConfigError
+from .daemon import Daemon, ScheduledTask
 from .health import HealthState, start_health_server
 
 
@@ -26,14 +28,52 @@ def _setup_logging(level: str) -> None:
     )
 
 
-def _check(client: ConfluenceClient, config: Config, logger: logging.Logger) -> int:
-    """Проверить доступность всех страниц, упомянутых в правилах."""
+def _build_tasks(config: Config, client: ConfluenceClient) -> list[ScheduledTask]:
+    """Собрать задачи, под которые что-то настроено.
+
+    Задача регистрируется, только если её секция в файле правил непустая:
+    установке может быть нужна лишь часть задач, и держать в расписании
+    задачу без правил бессмысленно.
+    """
+    tasks: list[ScheduledTask] = []
+    if config.rules:
+        tasks.append(LabelMoverBot(config, client))
+    return tasks
+
+
+def _select(
+    tasks: list[ScheduledTask], only: str | None
+) -> list[ScheduledTask] | None:
+    """Отфильтровать задачи по --only. None — имя не опознано."""
+    if not only:
+        return tasks
+    chosen = [task for task in tasks if task.name == only]
+    if not chosen:
+        available = ", ".join(task.name for task in tasks)
+        print(
+            f"Неизвестная задача в --only: {only!r}. Настроены: {available}",
+            file=sys.stderr,
+        )
+        return None
+    return chosen
+
+
+def _check(
+    client: ConfluenceClient,
+    config: Config,
+    tasks: list[ScheduledTask],
+    logger: logging.Logger,
+) -> int:
+    """Проверить расписания и доступность всех страниц, упомянутых в правилах."""
     ok = True
     try:
         logger.info("Бот работает под пользователем: %s", client.get_current_user())
     except ConfluenceError as exc:
         logger.error("Не удалось определить текущего пользователя: %s", exc)
         ok = False
+
+    for task in tasks:
+        logger.info("Задача %s — расписание %r", task.name, task.cron)
 
     for rule in config.rules:
         logger.info("Правило %r (лейблы: %s):", rule.name, ", ".join(rule.labels))
@@ -51,7 +91,7 @@ def _check(client: ConfluenceClient, config: Config, logger: logging.Logger) -> 
     if not ok:
         logger.error("Проверка не пройдена.")
         return 1
-    logger.info("Проверка успешна: правил %d.", len(config.rules))
+    logger.info("Проверка успешна: задач %d, правил переноса %d.", len(tasks), len(config.rules))
     return 0
 
 
@@ -64,6 +104,11 @@ def main(argv: list[str] | None = None) -> int:
         "--check",
         action="store_true",
         help="Проверить конфигурацию, авторизацию и доступ к страницам, затем выйти",
+    )
+    parser.add_argument(
+        "--only",
+        metavar="TASK",
+        help="Запустить только одну задачу (напр. moves) вместо всех настроенных",
     )
     parser.add_argument(
         "--rules",
@@ -87,23 +132,39 @@ def main(argv: list[str] | None = None) -> int:
     health = HealthState(config.health_liveness_timeout)
     client = ConfluenceClient(config, heartbeat=health.beat)
 
-    if args.check:
-        return _check(client, config, logger)
+    tasks = _build_tasks(config, client)
+    if not tasks:
+        print(
+            "Не настроено ни одной задачи: в файле правил нет ни одного правила переноса.",
+            file=sys.stderr,
+        )
+        return 2
 
-    bot = LabelMoverBot(config, client, health=health)
+    selected = _select(tasks, args.only)
+    if selected is None:
+        return 2
+    tasks = selected
+
+    if args.check:
+        return _check(client, config, tasks, logger)
 
     if args.once:
-        try:
-            bot.run_once()
-        except ConfluenceError as exc:
-            logger.error("Ошибка: %s", exc)
-            return 1
-        return 0
+        failed = False
+        for task in tasks:
+            try:
+                task.run_once()
+            except ConfluenceError as exc:
+                logger.error("Задача %r: ошибка: %s", task.name, exc)
+                failed = True
+        return 1 if failed else 0
 
+    # Демон создаётся до старта health-сервера: так задачи попадают в /readyz
+    # до того, как по нему начнут стучаться пробы.
+    daemon = Daemon(tasks, client, health=health)
     start_health_server(health, config.health_port)
 
     try:
-        bot.run_forever()
+        daemon.run_forever()
     except KeyboardInterrupt:
         logger.info("Остановлено пользователем.")
     return 0

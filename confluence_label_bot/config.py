@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from croniter import croniter
@@ -68,15 +69,28 @@ def _require_float(name: str, *, minimum: float | None = None) -> float:
     return value
 
 
-def _get_cron(name: str, default: str) -> str:
-    raw = (os.getenv(name) or "").strip() or default
-    if not croniter.is_valid(raw):
+def _validate_cron(name: str, expr: str) -> str:
+    if not croniter.is_valid(expr):
         raise ConfigError(
             f"{name} должен быть cron-выражением вида «мин час день месяц день_недели», "
-            f"получено: {raw!r}. Примеры: «*/5 * * * *» — каждые 5 минут, "
+            f"получено: {expr!r}. Примеры: «*/5 * * * *» — каждые 5 минут, "
             f"«0 * * * *» — в начале каждого часа, «0 9 * * 1-5» — в 9:00 по будням."
         )
-    return raw
+    return expr
+
+
+def _get_cron(names: Sequence[str], default: str) -> str:
+    """Расписание из первой непустой переменной из names, иначе default.
+
+    Несколько имён — ради обратной совместимости: MOVE_CRON_SCHEDULE пришёл на
+    место CRON_SCHEDULE, и старое имя продолжает работать в уже развёрнутых
+    установках.
+    """
+    for name in names:
+        raw = (os.getenv(name) or "").strip()
+        if raw:
+            return _validate_cron(name, raw)
+    return _validate_cron(names[0], default)
 
 
 DEFAULT_ENV_FILE = "secrets.env"
@@ -117,9 +131,17 @@ class Config:
 
     rules: tuple[Rule, ...]
 
-    cron: str
+    # Расписание на каждую задачу: переносы нужны часто, а задачи, которые
+    # правят тело страниц, — редко. Подробнее в README.
+    move_cron: str
+    mentions_cron: str
+
     log_level: str
+    # Общий пробный прогон и его переопределение для сбора упоминаний: при
+    # раскатке новой задачи полезно держать её в DRY_RUN, не останавливая
+    # переносы, которые уже работают вживую.
     dry_run: bool
+    mentions_dry_run: bool
 
     # Троттлинг обращений к Confluence и обработка 429.
     query_delay: float
@@ -161,6 +183,9 @@ class Config:
         except RulesError as exc:
             raise ConfigError(str(exc)) from exc
 
+        move_cron = _get_cron(("MOVE_CRON_SCHEDULE", "CRON_SCHEDULE"), DEFAULT_CRON)
+        dry_run = _get_bool("DRY_RUN", False)
+
         return cls(
             base_url=base_url,
             pat=pat,
@@ -169,9 +194,13 @@ class Config:
             verify_ssl=_get_bool("CONFLUENCE_VERIFY_SSL", True),
             ca_cert_dir=(os.getenv("CONFLUENCE_CA_CERT_DIR") or "").strip() or None,
             rules=tuple(rules),
-            cron=_get_cron("CRON_SCHEDULE", DEFAULT_CRON),
+            move_cron=move_cron,
+            # Не задано — наследует расписание переносов: пока задача одна,
+            # поведение не отличается от прежнего единственного CRON_SCHEDULE.
+            mentions_cron=_get_cron(("MENTIONS_CRON_SCHEDULE",), move_cron),
             log_level=(os.getenv("LOG_LEVEL") or "INFO").strip().upper(),
-            dry_run=_get_bool("DRY_RUN", False),
+            dry_run=dry_run,
+            mentions_dry_run=_get_bool("MENTIONS_DRY_RUN", dry_run),
             query_delay=_require_float("CONFLUENCE_QUERY_DELAY", minimum=0.0),
             max_retries=_get_int("CONFLUENCE_MAX_RETRIES", 3, minimum=0),
             retry_max_wait=_get_float("CONFLUENCE_RETRY_MAX_WAIT", 60.0, minimum=0.0),
