@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from confluence_label_bot.client import (
+    ConfluenceConflict,
+    ConfluenceError,
+    Page,
+    PageBody,
+)
+from confluence_label_bot.rules import MentionRule
 
 
 class FakeClock:
@@ -78,3 +87,63 @@ class FakeClient:
         if self._error is not None:
             raise self._error
         return self._user
+
+
+class FakeConfluence:
+    """Confluence в памяти: страницы с телами, учёт записей и сбоев.
+
+    update_page_body поднимает версию и сохраняет новое тело, поэтому повторный
+    проход читает уже записанное — именно это и проверяет идемпотентность.
+    """
+
+    def __init__(self, pages: dict[str, str], *, labels_hit: list[str] | None = None) -> None:
+        # id → тело в storage format
+        self.bodies = dict(pages)
+        self.versions = {page_id: 1 for page_id in pages}
+        self.titles = {page_id: f"Страница {page_id}" for page_id in pages}
+        # Какие страницы отдавать как отобранные по лейблам.
+        self._labels_hit = labels_hit if labels_hit is not None else list(pages)
+        self.writes: list[tuple[str, str]] = []
+        self.name_lookups: list[str] = []
+        # Сколько ближайших записей должны упасть конфликтом версий.
+        self.conflicts = 0
+        # id страниц, чтение которых должно падать.
+        self.broken: set[str] = set()
+
+    def find_pages_with_labels_under(self, *, ancestor_id, labels, space_key=None):
+        return [self._page(page_id) for page_id in self._labels_hit]
+
+    def get_page_body(self, page_id: str) -> PageBody:
+        if page_id in self.broken:
+            raise ConfluenceError(f"страница {page_id} недоступна")
+        return PageBody(page=self._page(page_id), storage=self.bodies[page_id])
+
+    def update_page_body(self, page: Page, storage: str) -> None:
+        if self.conflicts > 0:
+            self.conflicts -= 1
+            raise ConfluenceConflict("HTTP 409")
+        self.bodies[page.id] = storage
+        self.versions[page.id] = page.version + 1
+        self.writes.append((page.id, storage))
+
+    def user_display_name(self, key: str) -> str:
+        self.name_lookups.append(key)
+        return f"Имя-{key}"
+
+    def _page(self, page_id: str) -> Page:
+        return Page(
+            id=page_id,
+            title=self.titles[page_id],
+            version=self.versions[page_id],
+            space_key="DOCS",
+            ancestor_ids=(),
+        )
+
+
+@dataclass
+class FakeMentionConfig:
+    """Минимум, который читает MentionCollectorBot."""
+
+    mention_rules: tuple[MentionRule, ...]
+    mentions_dry_run: bool = False
+    mentions_cron: str = "0 * * * *"

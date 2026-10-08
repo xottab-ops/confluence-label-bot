@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from croniter import croniter
 from dotenv import load_dotenv
 
-from .rules import Rule, RulesError, load_rules
+from .rules import MentionRule, Rule, RulesError, load_rule_set
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,7 @@ class Config:
     ca_cert_dir: str | None
 
     rules: tuple[Rule, ...]
+    mention_rules: tuple[MentionRule, ...]
 
     # Расписание на каждую задачу: переносы нужны часто, а задачи, которые
     # правят тело страниц, — редко. Подробнее в README.
@@ -179,7 +180,7 @@ class Config:
         # Приоритет: аргумент CLI → переменная окружения → значение по умолчанию.
         path = rules_file or (os.getenv("RULES_FILE") or "").strip() or DEFAULT_RULES_FILE
         try:
-            rules = load_rules(path)
+            rule_set = load_rule_set(path)
         except RulesError as exc:
             raise ConfigError(str(exc)) from exc
 
@@ -193,7 +194,8 @@ class Config:
             password=password,
             verify_ssl=_get_bool("CONFLUENCE_VERIFY_SSL", True),
             ca_cert_dir=(os.getenv("CONFLUENCE_CA_CERT_DIR") or "").strip() or None,
-            rules=tuple(rules),
+            rules=rule_set.moves,
+            mention_rules=rule_set.mentions,
             move_cron=move_cron,
             # Не задано — наследует расписание переносов: пока задача одна,
             # поведение не отличается от прежнего единственного CRON_SCHEDULE.

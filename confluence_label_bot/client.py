@@ -35,8 +35,24 @@ class Page:
         return page_id in self.ancestor_ids
 
 
+@dataclass(frozen=True)
+class PageBody:
+    """Страница вместе с её телом в storage format."""
+
+    page: Page
+    storage: str
+
+
 class ConfluenceError(RuntimeError):
     """Ошибка обращения к Confluence API."""
+
+
+class ConfluenceConflict(ConfluenceError):
+    """Страницу изменили между чтением и записью (HTTP 409).
+
+    Отдельный тип, потому что лечится не повтором того же запроса, а
+    перечитыванием страницы и пересчётом правки.
+    """
 
 
 class ConfluenceClient:
@@ -57,6 +73,8 @@ class ConfluenceClient:
         self._max_retries = config.max_retries
         self._retry_max_wait = config.retry_max_wait
         self._last_request_at: float | None = None
+        # Имена людей по опознавателю — только для логов, см. user_display_name.
+        self._user_names: dict[str, str] = {}
         # Колбэк «я жив» для health-проб: дёргается на каждом запросе, чтобы во
         # время долгого обхода поддерева heartbeat оставался свежим.
         self._heartbeat = heartbeat
@@ -164,6 +182,12 @@ class ConfluenceClient:
                 )
                 time.sleep(wait)
                 continue
+
+            if resp.status_code == 409:
+                raise ConfluenceConflict(
+                    f"{method} {url} → HTTP 409: страницу изменили между чтением "
+                    f"и записью"
+                )
 
             if not resp.ok:
                 raise ConfluenceError(
@@ -308,6 +332,74 @@ class ConfluenceClient:
             params={"expand": "version,space,ancestors"},
         )
         return self._to_page(data)
+
+    def get_page_body(self, page_id: str) -> PageBody:
+        """Страница вместе с телом в storage format.
+
+        Тело берётся отдельным запросом по уже отобранным страницам, а не в
+        обходе поддерева: `expand=body.storage` на каждом узле раздул бы каждый
+        ответ обхода, а тело нужно единицам страниц.
+        """
+        data = self._request(
+            "GET",
+            f"/content/{page_id}",
+            params={"expand": "version,space,body.storage"},
+        )
+        storage = ((data.get("body") or {}).get("storage") or {}).get("value") or ""
+        # Предки здесь не нужны и не запрашиваются: тело правится на месте.
+        return PageBody(page=self._to_page(data, ()), storage=storage)
+
+    def update_page_body(self, page: Page, storage: str) -> None:
+        """Записать новое тело страницы.
+
+        `ancestors` намеренно не передаётся — с ним это был бы перенос. С
+        move_page парность обратная: тот шлёт `ancestors` и не шлёт `body`.
+        Перепутать нельзя, иначе страница переедет на ровном месте.
+
+        `minorEdit` глушит рассылку наблюдателям: бот ходит по cron, и без него
+        каждая правка попадала бы всем подписчикам в ленту.
+        """
+        body = {
+            "id": page.id,
+            "type": "page",
+            "title": page.title,
+            "space": {"key": page.space_key},
+            "body": {"storage": {"value": storage, "representation": "storage"}},
+            "version": {"number": page.version + 1, "minorEdit": True},
+        }
+        self._request(
+            "PUT",
+            f"/content/{page.id}",
+            json=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+    def user_display_name(self, key: str) -> str:
+        """Человекочитаемое имя по опознавателю упоминания — для логов.
+
+        В логе и в DRY_RUN `ff8080815...` бесполезен, поэтому имя стоит одного
+        запроса. Кеш живёт столько же, сколько процесс: имена не меняются, а
+        иначе на каждом проходе уходил бы запрос на каждого упомянутого.
+
+        Опознаватель приходит из разметки и бывает разного рода, поэтому
+        пробуются оба параметра поиска. Если не нашлось — в лог идёт сам
+        опознаватель: имя нужно для читаемости, а не для работы.
+        """
+        cached = self._user_names.get(key)
+        if cached is not None:
+            return cached
+
+        name = key
+        for param in ("key", "username"):
+            try:
+                data = self._request("GET", "/user", params={param: key})
+            except ConfluenceError:
+                continue
+            name = data.get("displayName") or data.get("username") or key
+            break
+
+        self._user_names[key] = name
+        return name
 
     def move_page(self, page: Page, new_parent_id: str) -> None:
         """Сменить родителя страницы (перенос вместе со всем поддеревом).

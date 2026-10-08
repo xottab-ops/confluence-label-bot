@@ -3,7 +3,7 @@
 Использование:
     python -m confluence_label_bot                    # демон (по расписаниям задач)
     python -m confluence_label_bot --once             # один проход всех задач и выход
-    python -m confluence_label_bot --only moves       # только одна задача
+    python -m confluence_label_bot --only mentions    # только одна задача (moves/mentions)
     python -m confluence_label_bot --check            # проверка подключения и выход
 """
 
@@ -18,9 +18,17 @@ from .client import ConfluenceClient, ConfluenceError
 from .config import Config, ConfigError
 from .daemon import Daemon, ScheduledTask
 from .health import HealthState, start_health_server
+from .mentions import MentionCollectorBot
 
 
 def _setup_logging(level: str) -> None:
+    # Консоль Windows по умолчанию не в UTF-8, и первый же символ вне её
+    # кодовой страницы (а в сообщениях есть и «→», и кавычки-ёлочки) валит
+    # обработчик логов с UnicodeEncodeError. Логи не должны падать из-за
+    # кодировки терминала, поэтому непредставимое заменяется, а не ломает вывод.
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="backslashreplace")
+
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
@@ -38,6 +46,10 @@ def _build_tasks(config: Config, client: ConfluenceClient) -> list[ScheduledTask
     tasks: list[ScheduledTask] = []
     if config.rules:
         tasks.append(LabelMoverBot(config, client))
+    # Порядок регистрации — порядок выполнения при совпадении сроков: сбор
+    # упоминаний идёт после переносов, по уже устоявшемуся дереву.
+    if config.mention_rules:
+        tasks.append(MentionCollectorBot(config, client))
     return tasks
 
 
@@ -88,10 +100,33 @@ def _check(
                 "  %-10s %s %r (space=%s)", role, page.id, page.title, page.space_key
             )
 
+    for rule in config.mention_rules:
+        logger.info(
+            "Правило сбора %r (лейблы: %s, столбец: %s → плейсхолдер %r):",
+            rule.name,
+            ", ".join(rule.labels),
+            ", ".join(rule.columns),
+            rule.placeholder,
+        )
+        try:
+            page = client.get_page(rule.root)
+        except ConfluenceError as exc:
+            logger.error("  %-10s %s → недоступна: %s", "корень", rule.root, exc)
+            ok = False
+        else:
+            logger.info(
+                "  %-10s %s %r (space=%s)", "корень", page.id, page.title, page.space_key
+            )
+
     if not ok:
         logger.error("Проверка не пройдена.")
         return 1
-    logger.info("Проверка успешна: задач %d, правил переноса %d.", len(tasks), len(config.rules))
+    logger.info(
+        "Проверка успешна: задач %d, правил переноса %d, правил сбора %d.",
+        len(tasks),
+        len(config.rules),
+        len(config.mention_rules),
+    )
     return 0
 
 
@@ -108,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--only",
         metavar="TASK",
-        help="Запустить только одну задачу (напр. moves) вместо всех настроенных",
+        help="Запустить только одну задачу (moves или mentions) вместо всех настроенных",
     )
     parser.add_argument(
         "--rules",
@@ -135,7 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     tasks = _build_tasks(config, client)
     if not tasks:
         print(
-            "Не настроено ни одной задачи: в файле правил нет ни одного правила переноса.",
+            "Не настроено ни одной задачи: в файле правил пусты обе секции "
+            "('rules' и 'mentions').",
             file=sys.stderr,
         )
         return 2
