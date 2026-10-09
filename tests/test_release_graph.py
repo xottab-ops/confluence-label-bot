@@ -116,6 +116,53 @@ graphs:
     assert len(load_rule_set(_write(tmp_path, text)).graphs) == 2
 
 
+# ── разбор таблицы ──────────────────────────────────────────────────────────
+HINT = "<ac:placeholder>Укажите релиз</ac:placeholder>"
+
+
+def _commented_table(rows: list[tuple[str, str, str, str, str]]) -> str:
+    """Таблица с номером и комментарием: (№, команда, релиз, зависимость, комментарий)."""
+    body = "".join(
+        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows
+    )
+    return (
+        "<table><tbody><tr><th>№</th><th>Команда</th><th>Релиз</th>"
+        "<th>Зависимость от релизов</th><th>Комментарий</th></tr>"
+        f"{body}</tbody></table>"
+    )
+
+
+@pytest.mark.parametrize(
+    "blank",
+    [
+        ("2", "", "", "", ""),
+        ("2", "&nbsp;", "<br/>", "", ""),
+        ("2", "", "", "", "Ждём согласования"),
+        ("2", f"<p>{HINT}</p>", HINT, HINT, "Ждём согласования"),
+    ],
+    ids=["пустая", "пробелы", "только-комментарий", "подсказки-и-комментарий"],
+)
+def test_пустая_строка_не_попадает_в_граф(blank):
+    storage = _commented_table(
+        [("1", "Billing", "BILL-1", "", ""), blank, ("3", "Portal", "PORT-1", "BILL-1", "")]
+    )
+    rows = parse_rows(storage)
+
+    assert [row.num for row in rows] == ["1", "3"]
+    plan = build_plan(rows)
+    assert not plan.errors
+    assert {num for wave in plan.waves for num in wave} == {"1", "3"}
+
+
+def test_подсказка_шаблона_не_считается_значением():
+    storage = _commented_table([("1", f"<p>{HINT}</p>", "BILL-1", HINT, "")])
+    (row,) = parse_rows(storage)
+
+    assert row.team == ""
+    assert row.releases == ["BILL-1"]
+    assert row.unfilled == ["team", "depends_on"]
+
+
 # ── разметка ────────────────────────────────────────────────────────────────
 def test_json_встаёт_за_абзацем_с_картинкой():
     storage = _page()

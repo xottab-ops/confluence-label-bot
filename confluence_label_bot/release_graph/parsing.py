@@ -117,19 +117,31 @@ def parse_rows(storage: str) -> list[Row]:
         if not cells:
             continue
         row = Row(num=str(len(rows) + 1))
+        filled = False
         for i, cell in enumerate(cells):
             name = mapping.get(i)
             if not name:
                 continue
-            if cell.find("ac:placeholder"):
+            placeholders = cell.find_all("ac:placeholder")
+            if placeholders:
                 row.unfilled.append(name)
+            # A placeholder is the template's hint for the author, not a value:
+            # without this a row of untouched hints reads as a filled one.
+            for placeholder in placeholders:
+                placeholder.decompose()
             if name == "num":
                 row.num = cell_text(cell) or row.num
-            elif name == "status":
-                row.status = cell_status(cell)
+                continue
+            if name == "status":
+                value = cell_status(cell)
             elif name in KEY_COLUMNS:
-                setattr(row, name, cell_keys(cell))
+                value = cell_keys(cell)
             else:
-                setattr(row, name, cell_text(cell))
-        rows.append(row)
+                value = cell_text(cell)
+            setattr(row, name, value)
+            filled = filled or bool(value)
+        # A row with nothing but a number, hints or columns the graph does not
+        # read (comments, say) is a blank one: it is no release, only noise.
+        if filled:
+            rows.append(row)
     return rows
