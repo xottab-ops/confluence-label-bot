@@ -11,17 +11,26 @@ from __future__ import annotations
 
 import os
 
+# DejaVu ships with the package: slim and Alpine images often have no TTF font
+# at all (or keep it under a path nobody guessed), and Pillow then falls back to
+# its built-in Latin-only font — Cyrillic comes out as boxes. The bundled font
+# also makes the picture the same on every machine, so a page is not redrawn
+# just because the bot moved to another host.
+BUNDLED = os.path.join(os.path.dirname(__file__), "fonts")
+
 FONT_FILES = {
-    False: ["C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
+    False: [os.path.join(BUNDLED, "DejaVuSans.ttf"),
+            "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
             "/System/Library/Fonts/Supplemental/Arial.ttf"],
-    True: ["C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/arialbd.ttf",
+    True: [os.path.join(BUNDLED, "DejaVuSans-Bold.ttf"),
+           "C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/arialbd.ttf",
            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
            "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
 }
-SVG_FONT = "Segoe UI, Roboto, Helvetica, Arial, sans-serif"
+SVG_FONT = "DejaVu Sans, Segoe UI, Roboto, Helvetica, Arial, sans-serif"
 
 NARROW = set("ijlt.,:;'!|()[]{} ")
 WIDE = set("MWМШЩЮЖ@%")

@@ -32,6 +32,8 @@ COLUMNS = {
     "depends on": "depends_on",
     "depends on releases": "depends_on",
     "release dependencies": "depends_on",
+    "порядок установки": "depends_on",
+    "install order": "depends_on",
     "ров": "rov",
     "rov": "rov",
     "релиз": "releases",
@@ -53,6 +55,10 @@ COLUMN_PREFIXES = {
 }
 REQUIRED = {"releases", "depends_on"}
 KEY_COLUMNS = ("releases", "depends_on", "install_tasks", "prereqs", "postreqs")
+# What a template row carries before anyone touches it: a number and a default
+# status (ЧЕРНОВИК). Neither says the row is a release.
+TEMPLATE_COLUMNS = ("num", "status")
+DASH_RE = re.compile("[-‐-―−\\s]*")  # hyphen, en/em dashes, minus
 
 
 def column_name(header: str) -> str | None:
@@ -67,6 +73,11 @@ def column_name(header: str) -> str | None:
 
 def cell_text(cell: Tag) -> str:
     return " ".join(cell.get_text(" ", strip=True).split())
+
+
+def is_dash(text: str) -> bool:
+    """«-» is how the template asks to mark a cell that does not apply."""
+    return DASH_RE.fullmatch(text) is not None
 
 
 def cell_keys(cell: Tag) -> list[str]:
@@ -90,7 +101,7 @@ def cell_rov(cell: Tag) -> list[str]:
     if keys:
         return keys
     text = cell_text(cell)
-    return [text] if text else []
+    return [] if is_dash(text) else [text]
 
 
 def cell_status(cell: Tag) -> str:
@@ -142,19 +153,22 @@ def parse_rows(storage: str) -> list[Row]:
                 placeholder.decompose()
             if name == "num":
                 row.num = cell_text(cell) or row.num
+            elif name == "status":
+                row.status = cell_status(cell)
+            if name in TEMPLATE_COLUMNS:
                 continue
-            if name == "status":
-                value = cell_status(cell)
-            elif name == "rov":
+            if name == "rov":
                 value = cell_rov(cell)
             elif name in KEY_COLUMNS:
                 value = cell_keys(cell)
             else:
-                value = cell_text(cell)
+                text = cell_text(cell)
+                value = "" if is_dash(text) else text
             setattr(row, name, value)
             filled = filled or bool(value)
-        # A row with nothing but a number, hints or columns the graph does not
-        # read (comments, say) is a blank one: it is no release, only noise.
+        # A row with nothing but a number, the default status, hints, dashes or
+        # columns the graph does not read (comments, the DL) is a blank one: it
+        # is no release, only noise.
         if filled:
             rows.append(row)
     return rows

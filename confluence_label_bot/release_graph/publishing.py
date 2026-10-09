@@ -140,6 +140,107 @@ def find_json(storage: str, title: str) -> tuple[re.Match | None, Any]:
     return None, None
 
 
+# ── картинка в сворачиваемом блоке ──────────────────────────────────────────
+# Картинка стоит в своём макросе expand, отдельно от свёрнутого JSON: граф
+# можно раскрыть и смотреть, не разворачивая сотни строк данных под ним.
+EXPAND_TITLE = "Граф зависимостей релизов"
+
+_INLINE = r"(?:span|code|strong|em|b|i|u|s|sub|sup)"
+_FILL = r"(?:\s|&nbsp;|<br\s*/?>)*"
+_PARAGRAPH_TAIL_RE = re.compile(rf"(?:{_FILL}</{_INLINE}>)*{_FILL}</p>", re.IGNORECASE)
+_MACRO_TAG_RE = re.compile(r"<ac:structured-macro\b([^>]*?)(/?)>|</ac:structured-macro>",
+                           re.IGNORECASE)
+_MACRO_NAME_RE = re.compile(r"\bac:name=\"([^\"]*)\"")
+
+
+def expand_storage(image: str) -> str:
+    return (
+        '<ac:structured-macro ac:name="expand">'
+        f'<ac:parameter ac:name="title">{EXPAND_TITLE}</ac:parameter>'
+        f'<ac:rich-text-body><p>{image}</p></ac:rich-text-body>'
+        '</ac:structured-macro>'
+    )
+
+
+def _paragraph_re(inner: str) -> re.Pattern:
+    """<p>, в котором кроме `inner` ничего нет, — с учётом строчного оформления."""
+    return re.compile(
+        rf"<p\b[^>]*>(?:{_FILL}<{_INLINE}\b[^>]*>)*{_FILL}(?:{inner}){_FILL}"
+        rf"(?:</{_INLINE}>{_FILL})*</p>",
+        re.IGNORECASE)
+
+
+def enclosing_expand(storage: str, pos: int) -> tuple[int, int] | None:
+    """Границы макроса expand, внутри которого стоит позиция pos, или None.
+
+    Регуляркой вложенность макросов не разобрать, поэтому теги макросов
+    проходятся стеком: так и чужой expand с макросами внутри опознаётся верно.
+    """
+    stack: list[tuple[str, int]] = []
+    depth = None  # глубина нужного expand, когда он найден
+    for tag in _MACRO_TAG_RE.finditer(storage):
+        if depth is None and tag.start() >= pos:
+            names = [name for name, _ in stack]
+            if "expand" not in names:
+                return None
+            depth = len(names) - 1 - names[::-1].index("expand")
+        if tag.group(0).startswith("</"):
+            if not stack:
+                continue
+            _, start = stack.pop()
+            if depth is not None and len(stack) == depth:
+                return start, tag.end()
+        elif not tag.group(2):
+            name = _MACRO_NAME_RE.search(tag.group(1))
+            stack.append((name.group(1) if name else "", tag.start()))
+    return None
+
+
+def place_picture(storage: str, filename: str, placeholder: str,
+                  width: int | None = None) -> Insertion:
+    """insert_image из relgraph, но картинка — в своём сворачиваемом блоке.
+
+    Маркер, стоящий в своём абзаце, заменяется вместе с абзацем: блочный
+    макрос внутри <p> — невалидная разметка. Картинка, выложенная раньше без
+    блока, переносится в блок; наш JSON при этом снимается, и insert_json
+    ставит его заново — уже под блоком.
+    """
+    image = image_storage(filename, width)
+    block = expand_storage(image)
+    pictures = image_re(filename)
+
+    def outside(match: re.Match) -> bool:
+        return enclosing_expand(match.string, match.start()) is None
+
+    found = list(pictures.finditer(storage))
+    loose = [m for m in found if outside(m)]
+    if found and not loose:
+        # Картинка уже в блоке: как и в relgraph, только приводим её разметку к нашей.
+        new, count = pictures.subn(image, storage)
+        return Insertion(new, EXISTING, count)
+
+    marker = placeholder_re(placeholder).pattern
+    new, count = _paragraph_re(marker).subn(block, storage)
+    if not count:
+        new, count = placeholder_re(placeholder).subn(block, storage)
+    if count:
+        return Insertion(new, PLACEHOLDER, count)
+
+    if not loose:
+        return Insertion(storage, MISSING)
+
+    macro, _ = find_json(storage, json_title(filename))
+    if macro is not None:
+        storage = storage[:macro.start()] + storage[macro.end():]
+
+    # Сначала картинки, занимающие абзац целиком, — вместе с абзацем; затем
+    # остальные. Картинки, уже лежащие в блоке, только приводятся к нашей разметке.
+    new = _paragraph_re(pictures.pattern).sub(
+        lambda m: block if outside(m) else m.group(0), storage)
+    new = pictures.sub(lambda m: block if outside(m) else image, new)
+    return Insertion(new, EXISTING, len(loose))
+
+
 def insert_json(storage: str, filename: str, data: dict[str, Any]) -> tuple[str, bool]:
     """Положить JSON под картинку. Возвращает (тело, изменились ли данные).
 
@@ -157,10 +258,17 @@ def insert_json(storage: str, filename: str, data: dict[str, Any]) -> tuple[str,
     image = image_re(filename).search(storage)
     if image is None:
         return storage, False
+    block = enclosing_expand(storage, image.start())
+    if block is not None:
+        # Картинка в своём блоке (см. place_picture) — JSON встаёт сразу под ним.
+        at = block[1]
+        return storage[:at] + json_storage(title, data) + storage[at:], True
     # Маркер обычно стоит в своём <p>, а блочный макрос внутри абзаца — это
     # невалидная разметка, которую редактор потом перекладывает по-своему.
+    # Маркер бывает и обёрнут в строчное оформление (<p><code><span>…), поэтому
+    # закрывающие строчные теги перед </p> тоже пропускаются.
     at = image.end()
-    tail = re.match(r"\s*</p>", storage[at:])
+    tail = _PARAGRAPH_TAIL_RE.match(storage, at)
     if tail:
-        at += tail.end()
+        at = tail.end()
     return storage[:at] + json_storage(title, data) + storage[at:], True

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import pytest
 
@@ -187,6 +188,167 @@ def test_ров_выводится_на_картинке():
 
     assert "РоВ: ROV-7" in svg
     assert svg.count("РоВ:") == 1  # у строки без РоВ подписи нет
+
+
+def _jira(key: str) -> str:
+    return (
+        '<ac:structured-macro ac:name="jira" ac:schema-version="1">'
+        '<ac:parameter ac:name="server">Jira</ac:parameter>'
+        f'<ac:parameter ac:name="key">{key}</ac:parameter></ac:structured-macro>'
+    )
+
+
+def _status(title: str) -> str:
+    return (
+        '<ac:structured-macro ac:name="status" ac:schema-version="1">'
+        '<ac:parameter ac:name="colour">Grey</ac:parameter>'
+        f'<ac:parameter ac:name="title">{title}</ac:parameter></ac:structured-macro>'
+    )
+
+
+def _hint(text: str) -> str:
+    return f"<ac:placeholder>{text}</ac:placeholder>"
+
+
+# Так оформлена страница «Release | 08.10.2026»: шаблонная строка несёт номер,
+# статус ЧЕРНОВИК по умолчанию и подсказки во всех остальных ячейках.
+RELEASE_PAGE = (
+    "<table><tbody><tr><th>№</th><th>Команда</th><th>Кластер</th><th>Дата установки</th>"
+    "<th>Статус</th><th>Порядок установки</th><th>Релиз</th><th>РоВ</th>"
+    "<th>Задача на установку</th>"
+    '<th><span class="">Зависимости до внедрения (параметры, ролёвка, и т д)</span></th>'
+    '<th>Зависимости после внедрения <span class="">(CCT, BFF и т д)</span></th>'
+    "<th>Комментарий</th><th>Ответственный DL</th></tr>"
+    "<tr><td>1</td><td>Online Bank</td><td>Clients</td><td>08.10</td>"
+    f"<td>{_status('ЗАВЕРШЕНО')}</td><td>-</td><td><p>{_jira('CLDROBF-7861')}</p></td>"
+    f"<td>{_jira('CLDROBF-8190')}</td><td>{_jira('CLDSUP-40253')}</td><td>-</td>"
+    f"<td>{_hint('Ссылки на различные зависимости')}</td>"
+    f"<td>{_hint('Комментарий на установку релиза')}</td><td>DL</td></tr>"
+    "<tr><td>2</td><td>Technology</td><td>Core</td><td>08.10</td>"
+    f"<td>{_status('В РАБОТЕ')}</td><td>{_jira('CLDROBF-7861')}</td>"
+    f"<td>{_jira('CALDERACP-1662')}</td><td>{_jira('CALDERACP-1910')}</td>"
+    f"<td>{_jira('CLDSUP-40316')}</td><td>-</td><td>-</td><td>-</td><td>DL</td></tr>"
+    + "".join(
+        f"<tr><td>{n}</td><td>{_hint('Название команды релиза')}</td>"
+        f"<td>{_hint('Название кластера команды')}</td><td>{_hint('// дата')}</td>"
+        f"<td>{_status('ЧЕРНОВИК')}</td>"
+        f"<td>{_hint('Ссылка на релиз, после которого нужно установить. Если такого релиза нет &mdash; прочерк (-)')}</td>"
+        f"<td>{_hint('Ссылка на релизный тикет')}</td><td>{_hint('Ссылка на РоВ')}</td>"
+        f"<td>{_hint('Ссылка на задачу на установку')}</td>"
+        f"<td>{_hint('Ссылки на различные зависимости')}</td>"
+        f"<td>{_hint('Ссылки на различные зависимости')}</td>"
+        f"<td>{_hint('Комментарий на установку релиза')}</td>"
+        f"<td>{_hint('DL, ответственный за релиз')}</td></tr>"
+        for n in (3, 4)
+    )
+    + "</tbody></table>"
+)
+
+
+def test_шаблонная_строка_с_черновиком_не_попадает_в_граф():
+    rows = parse_rows(RELEASE_PAGE)
+
+    assert [row.num for row in rows] == ["1", "2"]
+    plan = build_plan(rows)
+    assert not plan.errors
+    assert plan.waves == [["1"], ["2"]]
+    assert plan.edges == [("1", "2", ["CLDROBF-7861"])]
+    assert rows[0].rov == ["CLDROBF-8190"]
+    assert rows[0].depends_on == [] and rows[0].prereqs == []
+
+
+@pytest.mark.parametrize("dash", ["-", "—", " – "])
+def test_прочерк_это_пустая_ячейка(dash):
+    storage = _commented_table([("1", dash, dash, dash, ""), ("2", "Billing", "BILL-1", dash, "")])
+    rows = parse_rows(storage)
+
+    assert [row.num for row in rows] == ["2"]
+    assert rows[0].depends_on == []
+
+
+def test_json_встаёт_за_абзацем_даже_если_маркер_в_строчном_оформлении():
+    storage = _page(marker="<p><code><span>&lt;graph_placeholder&gt;</span></code></p>")
+    insertion = publishing.insert_image(storage, PNG, "graph_placeholder")
+    new, _ = publishing.insert_json(insertion.storage, PNG, _data(storage))
+
+    assert "</span></code></p><ac:structured-macro" in new
+    assert new.endswith("</ac:structured-macro><p>Конец.</p>")
+
+
+# ── картинка в сворачиваемом блоке ──────────────────────────────────────────
+def _publish(storage: str) -> str:
+    insertion = publishing.place_picture(storage, PNG, "graph_placeholder")
+    new, _ = publishing.insert_json(insertion.storage, PNG, _data(storage))
+    return new
+
+
+def test_картинка_в_своём_блоке_а_json_под_ним():
+    new = _publish(_page())
+    block = publishing.expand_storage(publishing.image_storage(PNG))
+
+    # Абзац с маркером заменён блоком целиком, JSON — следом, вне блока.
+    assert f"<p>Раскатка.</p>{_table(ROWS)}{block}<ac:structured-macro ac:name=\"code\">" in new
+    assert new.endswith("</ac:structured-macro><p>Конец.</p>")
+    image = re.search(r"<ac:image", new).start()
+    start, end = publishing.enclosing_expand(new, image)
+    assert "release-graph.json" not in new[start:end]
+
+
+def test_повторная_публикация_в_блок_ничего_не_меняет():
+    first = _publish(_page())
+    again = publishing.place_picture(first, PNG, "graph_placeholder")
+    second, changed = publishing.insert_json(again.storage, PNG, _data(_page()))
+
+    assert again.kind == publishing.EXISTING
+    assert not changed
+    assert second == first
+
+
+def test_картинка_старой_разметки_переезжает_в_блок():
+    # Так выглядела страница «Release | 08.10.2026»: маркер был набран
+    # моноширинным, и картинка с JSON оказались внутри <p><code><span>.
+    old_json = publishing.json_storage("release-graph.json", {"rows": []})
+    storage = (
+        f"{_table(ROWS)}<h2>Граф зависимостей</h2>"
+        f'<p><code><span><ac:image ac:align="center" ac:width="600">'
+        f'<ri:attachment ri:filename="{PNG}" /></ac:image>{old_json}</span></code></p>'
+        '<div class="notranslate"><br /></div>'
+    )
+    insertion = publishing.place_picture(storage, PNG, "graph_placeholder")
+    new, changed = publishing.insert_json(insertion.storage, PNG, _data(storage))
+
+    assert insertion.kind == publishing.EXISTING
+    assert changed
+    block = publishing.expand_storage(publishing.image_storage(PNG))
+    assert f"<h2>Граф зависимостей</h2>{block}<ac:structured-macro ac:name=\"code\">" in new
+    assert "<code>" not in new
+    assert new.count('ac:name="code"') == 1
+    assert publishing.find_json(new, "release-graph.json")[1] == _data(storage)
+
+
+def test_картинка_в_чужом_блоке_не_оборачивается_второй_раз():
+    storage = (
+        '<ac:structured-macro ac:name="expand"><ac:rich-text-body>'
+        '<p><ac:structured-macro ac:name="status" /></p>'
+        '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>Внимание</p>'
+        "</ac:rich-text-body></ac:structured-macro>"
+        f'<p><ac:image><ri:attachment ri:filename="{PNG}" /></ac:image></p>'
+        "</ac:rich-text-body></ac:structured-macro><p>Конец.</p>"
+    )
+    insertion = publishing.place_picture(storage, PNG, "graph_placeholder")
+
+    assert insertion.kind == publishing.EXISTING
+    assert insertion.storage.count('ac:name="expand"') == 1
+    new, _ = publishing.insert_json(insertion.storage, PNG, {"rows": []})
+    assert new.index("release-graph.json") > new.rindex("</ac:rich-text-body>")
+    assert new.endswith("<p>Конец.</p>")
+
+
+def test_шрифт_с_кириллицей_идёт_вместе_с_пакетом():
+    from confluence_label_bot.release_graph.render.text import BUNDLED, font_path
+
+    for bold in (False, True):
+        assert font_path(bold).startswith(BUNDLED)
 
 
 def test_подсказка_шаблона_не_считается_значением():

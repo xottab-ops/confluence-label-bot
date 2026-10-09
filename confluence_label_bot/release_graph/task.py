@@ -1,8 +1,8 @@
 """Задача графа зависимостей релизов — одна из задач демона.
 
 На каждой отобранной по лейблу странице: таблица раскатки → план по волнам →
-картинка. Картинка заливается вложением и встаёт на место маркера, под ней —
-JSON плана. Порядок тот же, что у publish_picture в relgraph: прочитать
+картинка. Картинка заливается вложением и встаёт на место маркера в своём
+сворачиваемом блоке, под ним — свёрнутый JSON плана. Порядок тот же, что у publish_picture в relgraph: прочитать
 текущее тело (чтобы не затереть чужие правки), залить вложение, сохранить тело.
 
 Отличие от relgraph одно, и оно из-за cron: relgraph на каждом запуске
@@ -39,14 +39,14 @@ class ReleaseGraphBot:
         self.cron = config.graph_cron
 
         # Без TTF-шрифта Pillow берёт встроенный, а в нём нет кириллицы —
-        # русские названия команд превратились бы в квадраты. В контейнере это
-        # обычное дело, поэтому говорим об этом сразу, а не после первой картинки.
+        # русские названия команд превратились бы в квадраты. DejaVu лежит в
+        # пакете, так что сюда попадаем, только если его не донесли до образа.
         if any(picture_format(r.attachment) == "png" for r in config.graph_rules):
             if font_path(False) is None:
                 logger.warning(
-                    "Задача %s: не найден ни один TTF-шрифт (Segoe UI, Arial, DejaVu) — "
-                    "кириллица на PNG не отрисуется. В образе Debian/Ubuntu: "
-                    "apt-get install fonts-dejavu-core",
+                    "Задача %s: не найден ни один TTF-шрифт — кириллица на PNG не "
+                    "отрисуется. Проверьте, что в образ попал каталог "
+                    "confluence_label_bot/release_graph/render/fonts",
                     TASK_NAME,
                 )
 
@@ -129,7 +129,7 @@ class ReleaseGraphBot:
                 "Правило графа %r: %s %r — %s", rule.name, page_id, title, message
             )
 
-        insertion = publishing.insert_image(
+        insertion = publishing.place_picture(
             body.storage, rule.attachment, rule.placeholder, rule.width
         )
         if insertion.kind == publishing.MISSING:
