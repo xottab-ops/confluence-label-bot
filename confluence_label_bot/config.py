@@ -133,6 +133,12 @@ class Config:
     mention_rules: tuple[MentionRule, ...]
     graph_rules: tuple[GraphRule, ...]
 
+    # Выключатели задач. Выключенная задача не регистрируется, даже если её
+    # секция в rules.yaml заполнена, — файл правил бывает общим на установки.
+    move_enabled: bool
+    mentions_enabled: bool
+    graph_enabled: bool
+
     # Расписание на каждую задачу: переносы нужны часто, а задачи, которые
     # правят тело страниц, — редко. Подробнее в README.
     move_cron: str
@@ -200,6 +206,9 @@ class Config:
             rules=rule_set.moves,
             mention_rules=rule_set.mentions,
             graph_rules=rule_set.graphs,
+            move_enabled=_get_bool("MOVE_ENABLED", True),
+            mentions_enabled=_get_bool("MENTIONS_ENABLED", True),
+            graph_enabled=_get_bool("GRAPH_ENABLED", True),
             move_cron=move_cron,
             # Не задано — наследует расписание переносов: пока задача одна,
             # поведение не отличается от прежнего единственного CRON_SCHEDULE.

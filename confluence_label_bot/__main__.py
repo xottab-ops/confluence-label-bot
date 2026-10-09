@@ -19,7 +19,6 @@ from .config import Config, ConfigError
 from .daemon import Daemon, ScheduledTask
 from .health import HealthState, start_health_server
 from .mentions import MentionCollectorBot
-from .release_graph.task import ReleaseGraphBot
 
 
 def _setup_logging(level: str) -> None:
@@ -37,21 +36,38 @@ def _setup_logging(level: str) -> None:
     )
 
 
-def _build_tasks(config: Config, client: ConfluenceClient) -> list[ScheduledTask]:
-    """Собрать задачи, под которые что-то настроено.
+def _enabled(name: str, flag: bool, variable: str, rules: tuple) -> bool:
+    """Включена ли задача: флаг из окружения и непустая секция правил.
 
-    Задача регистрируется, только если её секция в файле правил непустая:
-    установке может быть нужна лишь часть задач, и держать в расписании
-    задачу без правил бессмысленно.
+    Задача без правил не регистрируется: установке может быть нужна лишь часть
+    задач, и держать в расписании задачу без правил бессмысленно. Флаг
+    выключает задачу, не трогая rules.yaml, — файл правил часто общий на
+    несколько установок, а выключить задачу нужно в одной.
     """
+    if not rules:
+        return False
+    if not flag:
+        logging.getLogger("confluence_label_bot").info(
+            "Задача %s отключена (%s=false), правил в ней: %d", name, variable, len(rules)
+        )
+        return False
+    return True
+
+
+def _build_tasks(config: Config, client: ConfluenceClient) -> list[ScheduledTask]:
+    """Собрать задачи, которые включены и под которые что-то настроено."""
     tasks: list[ScheduledTask] = []
-    if config.rules:
+    if _enabled("moves", config.move_enabled, "MOVE_ENABLED", config.rules):
         tasks.append(LabelMoverBot(config, client))
     # Порядок регистрации — порядок выполнения при совпадении сроков: сбор
     # упоминаний идёт после переносов, по уже устоявшемуся дереву.
-    if config.mention_rules:
+    if _enabled("mentions", config.mentions_enabled, "MENTIONS_ENABLED", config.mention_rules):
         tasks.append(MentionCollectorBot(config, client))
-    if config.graph_rules:
+    if _enabled("graphs", config.graph_enabled, "GRAPH_ENABLED", config.graph_rules):
+        # Импорт здесь, а не наверху: граф тянет bs4 и Pillow, и установке с
+        # выключенным графом ставить их незачем.
+        from .release_graph.task import ReleaseGraphBot
+
         tasks.append(ReleaseGraphBot(config, client))
     return tasks
 
@@ -79,7 +95,15 @@ def _check(
     tasks: list[ScheduledTask],
     logger: logging.Logger,
 ) -> int:
-    """Проверить расписания и доступность всех страниц, упомянутых в правилах."""
+    """Проверить расписания и доступность страниц из правил выбранных задач.
+
+    Правила отключённой задачи не проверяются: она не запустится, и её
+    недоступная страница не повод валить проверку.
+    """
+    names = {task.name for task in tasks}
+    moves = config.rules if "moves" in names else ()
+    mentions = config.mention_rules if "mentions" in names else ()
+    graphs = config.graph_rules if "graphs" in names else ()
     ok = True
     try:
         logger.info("Бот работает под пользователем: %s", client.get_current_user())
@@ -90,7 +114,7 @@ def _check(
     for task in tasks:
         logger.info("Задача %s — расписание %r", task.name, task.cron)
 
-    for rule in config.rules:
+    for rule in moves:
         logger.info("Правило %r (лейблы: %s):", rule.name, ", ".join(rule.labels))
         for page_id, role in [(rule.source, "источник"), (rule.target, "назначение")]:
             try:
@@ -103,7 +127,7 @@ def _check(
                 "  %-10s %s %r (space=%s)", role, page.id, page.title, page.space_key
             )
 
-    for rule in config.mention_rules:
+    for rule in mentions:
         logger.info(
             "Правило сбора %r (лейблы: %s, столбец: %s → плейсхолдер %r):",
             rule.name,
@@ -121,7 +145,7 @@ def _check(
                 "  %-10s %s %r (space=%s)", "корень", page.id, page.title, page.space_key
             )
 
-    for rule in config.graph_rules:
+    for rule in graphs:
         logger.info(
             "Правило графа %r (лейблы: %s, маркер %r → вложение %s):",
             rule.name,
@@ -146,9 +170,9 @@ def _check(
         "Проверка успешна: задач %d, правил переноса %d, правил сбора %d, "
         "правил графа %d.",
         len(tasks),
-        len(config.rules),
-        len(config.mention_rules),
-        len(config.graph_rules),
+        len(moves),
+        len(mentions),
+        len(graphs),
     )
     return 0
 
@@ -193,8 +217,9 @@ def main(argv: list[str] | None = None) -> int:
     tasks = _build_tasks(config, client)
     if not tasks:
         print(
-            "Не настроено ни одной задачи: в файле правил пусты все секции "
-            "('rules', 'mentions' и 'graphs').",
+            "Не настроено ни одной задачи: секции 'rules', 'mentions' и 'graphs' "
+            "в файле правил пусты либо их задачи отключены "
+            "(MOVE_ENABLED, MENTIONS_ENABLED, GRAPH_ENABLED).",
             file=sys.stderr,
         )
         return 2
