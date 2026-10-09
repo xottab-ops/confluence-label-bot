@@ -32,6 +32,8 @@ COLUMNS = {
     "depends on": "depends_on",
     "depends on releases": "depends_on",
     "release dependencies": "depends_on",
+    "ров": "rov",
+    "rov": "rov",
     "релиз": "releases",
     "release": "releases",
     "releases": "releases",
@@ -80,6 +82,15 @@ def cell_keys(cell: Tag) -> list[str]:
         keys += JIRA_KEY_RE.findall(a["href"])
     keys += JIRA_KEY_RE.findall(cell.get_text(" "))
     return list(dict.fromkeys(keys))  # dedupe, order preserved
+
+
+def cell_rov(cell: Tag) -> list[str]:
+    """RoV: Jira keys when the cell has them, otherwise its text as written."""
+    keys = cell_keys(cell)
+    if keys:
+        return keys
+    text = cell_text(cell)
+    return [text] if text else []
 
 
 def cell_status(cell: Tag) -> str:
@@ -134,6 +145,8 @@ def parse_rows(storage: str) -> list[Row]:
                 continue
             if name == "status":
                 value = cell_status(cell)
+            elif name == "rov":
+                value = cell_rov(cell)
             elif name in KEY_COLUMNS:
                 value = cell_keys(cell)
             else:

@@ -46,6 +46,7 @@ EDGE_STYLES = {
 
 EXTERNAL_CAPTION = "external release"
 PREREQ_CAPTION = "before rollout"
+ROV_CAPTION = "РоВ"
 
 LEGEND_ITEMS = [
     ("done", "completed"),

@@ -14,8 +14,8 @@ from ..model import Plan, Row
 from .text import Metrics, wrap
 from .theme import (ARROW_LEN, CURVE_GRIP, DUMMY_HEIGHT, EXTERNAL_CAPTION, HEX_SLANT,
                     LAYER_GAP, LINE_GAP, MARGIN, NODE_GAP, NODE_MIN_W, PAD_X, PAD_Y,
-                    PREREQ_CAPTION, START_EXTRA, START_LABEL, SUB_SIZE, TITLE_SIZE,
-                    TITLE_TO_SUB)
+                    PREREQ_CAPTION, ROV_CAPTION, START_EXTRA, START_LABEL, SUB_SIZE,
+                    TITLE_SIZE, TITLE_TO_SUB)
 
 START = "__start__"
 EXTERNAL_PREFIX = "ext:"
@@ -72,7 +72,7 @@ def build_graph(rows: list[Row], plan: Plan, state_of) -> tuple[dict[str, Node],
 
     for r in rows:
         nodes[r.num] = Node(r.num, style=state_of(r, plan), entry=r.num in plan.entry_points,
-                            title=[r.label], subtitle=[", ".join(r.releases) or "—"])
+                            title=[r.label], subtitle=subtitle(r))
     for num in plan.entry_points:
         edges.append(Edge(START, num, "start"))
     for src, dst, _keys in plan.edges:
@@ -90,6 +90,14 @@ def build_graph(rows: list[Row], plan: Plan, state_of) -> tuple[dict[str, Node],
                               title=[key], subtitle=[PREREQ_CAPTION])
         edges.append(Edge(pre, num, "prereq"))
     return nodes, edges
+
+
+def subtitle(row: Row) -> list[str]:
+    """Under the title: the releases, then the RoV when the row has one."""
+    lines = [", ".join(row.releases) or "—"]
+    if row.rov:
+        lines.append(f"{ROV_CAPTION}: {', '.join(row.rov)}")
+    return lines
 
 
 def assign_layers(nodes: dict[str, Node], edges: list[Edge], plan: Plan) -> None:

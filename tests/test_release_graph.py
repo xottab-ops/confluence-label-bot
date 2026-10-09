@@ -154,6 +154,41 @@ def test_пустая_строка_не_попадает_в_граф(blank):
     assert {num for wave in plan.waves for num in wave} == {"1", "3"}
 
 
+def _rov_table(rov_cells: list[str]) -> str:
+    body = "".join(
+        f"<tr><td>T{i}</td><td>{rov}</td><td>REL-{i}</td><td></td><td>INST-{i}</td></tr>"
+        for i, rov in enumerate(rov_cells, start=1)
+    )
+    return (
+        "<table><tbody><tr><th>Команда</th><th>РоВ</th><th>Релиз</th>"
+        "<th>Зависимость от релизов</th><th>Задача на установку</th></tr>"
+        f"{body}</tbody></table>"
+    )
+
+
+def test_ров_читается_ключами_либо_текстом_и_попадает_в_json():
+    jira = (
+        '<ac:structured-macro ac:name="jira">'
+        '<ac:parameter ac:name="key">ROV-7</ac:parameter></ac:structured-macro>'
+    )
+    rows = parse_rows(_rov_table([jira, "№ 15 от 01.10", ""]))
+
+    assert [row.rov for row in rows] == [["ROV-7"], ["№ 15 от 01.10"], []]
+    assert rows[0].install_tasks == ["INST-1"]
+    data = publishing.plan_data(rows, build_plan(rows))
+    assert [row["rov"] for row in data["rows"]] == [["ROV-7"], ["№ 15 от 01.10"], []]
+
+
+def test_ров_выводится_на_картинке():
+    from confluence_label_bot.release_graph.render import render_image
+
+    rows = parse_rows(_rov_table(["ROV-7", ""]))
+    svg = render_image(rows, build_plan(rows), fmt="svg").decode("utf-8")
+
+    assert "РоВ: ROV-7" in svg
+    assert svg.count("РоВ:") == 1  # у строки без РоВ подписи нет
+
+
 def test_подсказка_шаблона_не_считается_значением():
     storage = _commented_table([("1", f"<p>{HINT}</p>", "BILL-1", HINT, "")])
     (row,) = parse_rows(storage)

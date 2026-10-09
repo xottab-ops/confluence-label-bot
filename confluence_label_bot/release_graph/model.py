@@ -41,6 +41,7 @@ class Row:
     cluster: str = ""
     status: str = ""
     releases: list[str] = field(default_factory=list)
+    rov: list[str] = field(default_factory=list)       # RoV: the rollout decision
     depends_on: list[str] = field(default_factory=list)
     install_tasks: list[str] = field(default_factory=list)
     prereqs: list[str] = field(default_factory=list)   # before rollout: settings, roles
