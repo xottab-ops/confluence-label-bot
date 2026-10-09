@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from croniter import croniter
 from dotenv import load_dotenv
 
-from .rules import MentionRule, Rule, RulesError, load_rule_set
+from .rules import GraphRule, MentionRule, Rule, RulesError, load_rule_set
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +131,13 @@ class Config:
 
     rules: tuple[Rule, ...]
     mention_rules: tuple[MentionRule, ...]
+    graph_rules: tuple[GraphRule, ...]
 
     # Расписание на каждую задачу: переносы нужны часто, а задачи, которые
     # правят тело страниц, — редко. Подробнее в README.
     move_cron: str
     mentions_cron: str
+    graph_cron: str
 
     log_level: str
     # Общий пробный прогон и его переопределение для сбора упоминаний: при
@@ -143,6 +145,7 @@ class Config:
     # переносы, которые уже работают вживую.
     dry_run: bool
     mentions_dry_run: bool
+    graph_dry_run: bool
 
     # Троттлинг обращений к Confluence и обработка 429.
     query_delay: float
@@ -196,13 +199,16 @@ class Config:
             ca_cert_dir=(os.getenv("CONFLUENCE_CA_CERT_DIR") or "").strip() or None,
             rules=rule_set.moves,
             mention_rules=rule_set.mentions,
+            graph_rules=rule_set.graphs,
             move_cron=move_cron,
             # Не задано — наследует расписание переносов: пока задача одна,
             # поведение не отличается от прежнего единственного CRON_SCHEDULE.
             mentions_cron=_get_cron(("MENTIONS_CRON_SCHEDULE",), move_cron),
+            graph_cron=_get_cron(("GRAPH_CRON_SCHEDULE",), move_cron),
             log_level=(os.getenv("LOG_LEVEL") or "INFO").strip().upper(),
             dry_run=dry_run,
             mentions_dry_run=_get_bool("MENTIONS_DRY_RUN", dry_run),
+            graph_dry_run=_get_bool("GRAPH_DRY_RUN", dry_run),
             query_delay=_require_float("CONFLUENCE_QUERY_DELAY", minimum=0.0),
             max_retries=_get_int("CONFLUENCE_MAX_RETRIES", 3, minimum=0),
             retry_max_wait=_get_float("CONFLUENCE_RETRY_MAX_WAIT", 60.0, minimum=0.0),

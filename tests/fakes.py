@@ -11,7 +11,7 @@ from confluence_label_bot.client import (
     Page,
     PageBody,
 )
-from confluence_label_bot.rules import MentionRule
+from confluence_label_bot.rules import GraphRule, MentionRule
 
 
 class FakeClock:
@@ -109,6 +109,9 @@ class FakeConfluence:
         self.conflicts = 0
         # id страниц, чтение которых должно падать.
         self.broken: set[str] = set()
+        # (id страницы, имя файла) → содержимое последней версии вложения.
+        self.attachments: dict[tuple[str, str], bytes] = {}
+        self.uploads: list[tuple[str, str, str]] = []
 
     def find_pages_with_labels_under(self, *, ancestor_id, labels, space_key=None):
         return [self._page(page_id) for page_id in self._labels_hit]
@@ -125,6 +128,12 @@ class FakeConfluence:
         self.bodies[page.id] = storage
         self.versions[page.id] = page.version + 1
         self.writes.append((page.id, storage))
+
+    def put_attachment(self, page_id, filename, data, media_type, comment) -> str:
+        outcome = "updated" if (page_id, filename) in self.attachments else "created"
+        self.attachments[(page_id, filename)] = data
+        self.uploads.append((page_id, filename, outcome))
+        return outcome
 
     def user_display_name(self, key: str) -> str:
         self.name_lookups.append(key)
@@ -147,3 +156,12 @@ class FakeMentionConfig:
     mention_rules: tuple[MentionRule, ...]
     mentions_dry_run: bool = False
     mentions_cron: str = "0 * * * *"
+
+
+@dataclass
+class FakeGraphConfig:
+    """Минимум, который читает ReleaseGraphBot."""
+
+    graph_rules: tuple[GraphRule, ...]
+    graph_dry_run: bool = False
+    graph_cron: str = "0 * * * *"

@@ -23,6 +23,8 @@ _ENV_VARS = (
     "LOG_LEVEL",
     "DRY_RUN",
     "MENTIONS_DRY_RUN",
+    "GRAPH_CRON_SCHEDULE",
+    "GRAPH_DRY_RUN",
     "LOAD_ENV_FILE",
     "ENV_FILE",
     "HEALTH_PORT",

@@ -80,3 +80,19 @@ def test_dry_run_переопределяется_для_упоминаний(en
 
     assert config.dry_run is False
     assert config.mentions_dry_run is True
+
+
+def test_расписание_и_dry_run_графа_наследуются_и_переопределяются(env, rules_yaml):
+    rules_yaml()
+    env.setenv("MOVE_CRON_SCHEDULE", "*/5 * * * *")
+    env.setenv("DRY_RUN", "true")
+
+    config = Config.load()
+    assert config.graph_cron == "*/5 * * * *"
+    assert config.graph_dry_run is True
+
+    env.setenv("GRAPH_CRON_SCHEDULE", "0 6 * * *")
+    env.setenv("GRAPH_DRY_RUN", "false")
+    config = Config.load()
+    assert config.graph_cron == "0 6 * * *"
+    assert config.graph_dry_run is False

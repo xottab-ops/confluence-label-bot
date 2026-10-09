@@ -3,7 +3,7 @@
 Использование:
     python -m confluence_label_bot                    # демон (по расписаниям задач)
     python -m confluence_label_bot --once             # один проход всех задач и выход
-    python -m confluence_label_bot --only mentions    # только одна задача (moves/mentions)
+    python -m confluence_label_bot --only mentions    # только одна задача (moves/mentions/graphs)
     python -m confluence_label_bot --check            # проверка подключения и выход
 """
 
@@ -19,6 +19,7 @@ from .config import Config, ConfigError
 from .daemon import Daemon, ScheduledTask
 from .health import HealthState, start_health_server
 from .mentions import MentionCollectorBot
+from .release_graph.task import ReleaseGraphBot
 
 
 def _setup_logging(level: str) -> None:
@@ -50,6 +51,8 @@ def _build_tasks(config: Config, client: ConfluenceClient) -> list[ScheduledTask
     # упоминаний идёт после переносов, по уже устоявшемуся дереву.
     if config.mention_rules:
         tasks.append(MentionCollectorBot(config, client))
+    if config.graph_rules:
+        tasks.append(ReleaseGraphBot(config, client))
     return tasks
 
 
@@ -118,14 +121,34 @@ def _check(
                 "  %-10s %s %r (space=%s)", "корень", page.id, page.title, page.space_key
             )
 
+    for rule in config.graph_rules:
+        logger.info(
+            "Правило графа %r (лейблы: %s, маркер %r → вложение %s):",
+            rule.name,
+            ", ".join(rule.labels),
+            rule.placeholder,
+            rule.attachment,
+        )
+        try:
+            page = client.get_page(rule.root)
+        except ConfluenceError as exc:
+            logger.error("  %-10s %s → недоступна: %s", "корень", rule.root, exc)
+            ok = False
+        else:
+            logger.info(
+                "  %-10s %s %r (space=%s)", "корень", page.id, page.title, page.space_key
+            )
+
     if not ok:
         logger.error("Проверка не пройдена.")
         return 1
     logger.info(
-        "Проверка успешна: задач %d, правил переноса %d, правил сбора %d.",
+        "Проверка успешна: задач %d, правил переноса %d, правил сбора %d, "
+        "правил графа %d.",
         len(tasks),
         len(config.rules),
         len(config.mention_rules),
+        len(config.graph_rules),
     )
     return 0
 
@@ -143,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--only",
         metavar="TASK",
-        help="Запустить только одну задачу (moves или mentions) вместо всех настроенных",
+        help="Запустить только одну задачу (moves, mentions или graphs) вместо всех настроенных",
     )
     parser.add_argument(
         "--rules",
@@ -170,8 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     tasks = _build_tasks(config, client)
     if not tasks:
         print(
-            "Не настроено ни одной задачи: в файле правил пусты обе секции "
-            "('rules' и 'mentions').",
+            "Не настроено ни одной задачи: в файле правил пусты все секции "
+            "('rules', 'mentions' и 'graphs').",
             file=sys.stderr,
         )
         return 2

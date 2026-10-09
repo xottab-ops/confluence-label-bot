@@ -374,6 +374,38 @@ class ConfluenceClient:
             headers={"Content-Type": "application/json"},
         )
 
+    def find_attachment(self, page_id: str, filename: str) -> str | None:
+        """ID вложения страницы по имени файла, либо None."""
+        data = self._request(
+            "GET",
+            f"/content/{page_id}/child/attachment",
+            params={"filename": filename},
+        )
+        results = (data or {}).get("results") or []
+        return str(results[0]["id"]) if results else None
+
+    def put_attachment(
+        self, page_id: str, filename: str, data: bytes, media_type: str, comment: str
+    ) -> str:
+        """Залить вложение или новую версию существующего: 'created' / 'updated'.
+
+        Новая версия идёт отдельным путём `.../{id}/data`: POST на общий путь с
+        уже занятым именем Confluence отвергает с HTTP 400. X-Atlassian-Token
+        обязателен для multipart — без него срабатывает защита от XSRF.
+        """
+        existing = self.find_attachment(page_id, filename)
+        path = f"/content/{page_id}/child/attachment"
+        if existing:
+            path += f"/{existing}/data"
+        self._request(
+            "POST",
+            path,
+            headers={"X-Atlassian-Token": "nocheck"},
+            files={"file": (filename, data, media_type)},
+            data={"comment": comment, "minorEdit": "true"},
+        )
+        return "updated" if existing else "created"
+
     def user_display_name(self, key: str) -> str:
         """Человекочитаемое имя по опознавателю упоминания — для логов.
 
