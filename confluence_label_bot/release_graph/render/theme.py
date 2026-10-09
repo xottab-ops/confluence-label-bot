@@ -27,6 +27,7 @@ START_LABEL = "Start"
 BOX_STYLES = {
     "plain": ("#ffffff", "#8b96a5", 1.6),
     "done": ("#d3f5d3", "#2e7d32", 1.6),
+    "unset": ("#d3f5d3", "#2e7d32", 1.6),     # no status given: the green of "done"
     "cancelled": ("#f8d7da", "#c62828", 1.6),
     "ready": ("#d6e9ff", "#1565c0", 3.0),
     "blocked": ("#ffe0b2", "#ef6c00", 1.6),
@@ -54,6 +55,7 @@ LEGEND_ITEMS = [
     ("ready", "ready to start"),
     ("blocked", "blocked"),
     ("plain", "waiting for dependencies"),
+    ("unset", "no status"),
     ("external", EXTERNAL_CAPTION),
     ("prereq", PREREQ_CAPTION),
 ]

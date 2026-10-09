@@ -77,6 +77,11 @@ class Plan:
 
 def row_state(row: Row, plan: Plan) -> str:
     """A row's state in one word — it colours the report, the graph and Mermaid."""
+    # The status column is no longer kept on the rollout pages: a row without a
+    # status gets a colour of its own instead of passing for "ready" — that
+    # blue is the colour of Start.
+    if not row.status.strip():
+        return "unset"
     if row.code == DONE:
         return "done"
     if row.code == CANCELLED:

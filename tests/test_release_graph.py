@@ -351,6 +351,21 @@ def test_шрифт_с_кириллицей_идёт_вместе_с_пакет�
         assert font_path(bold).startswith(BUNDLED)
 
 
+def test_релиз_без_статуса_зелёный_а_start_синий():
+    from confluence_label_bot.release_graph.model import row_state
+    from confluence_label_bot.release_graph.render import render_image
+    from confluence_label_bot.release_graph.render.theme import BOX_STYLES
+
+    rows = parse_rows(_table(ROWS))  # столбца «Статус» нет
+    plan = build_plan(rows)
+
+    assert [row_state(row, plan) for row in rows] == ["unset", "unset"]
+    assert BOX_STYLES["unset"][:2] == BOX_STYLES["done"][:2]
+    assert BOX_STYLES["start"][0] == "#1565c0"
+    svg = render_image(rows, plan, fmt="svg").decode("utf-8")
+    assert "no status" in svg and "ready to start" not in svg
+
+
 def test_подсказка_шаблона_не_считается_значением():
     storage = _commented_table([("1", f"<p>{HINT}</p>", "BILL-1", HINT, "")])
     (row,) = parse_rows(storage)
